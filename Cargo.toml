@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "csv2toml",
+    "cat-watcher",
+]
+resolver="3"

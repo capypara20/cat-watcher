@@ -1,0 +1,6 @@
+[package]
+name = "csv2toml"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
