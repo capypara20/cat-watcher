@@ -156,6 +156,7 @@ recursive = true
 target = "file"
 include_hidden = false
 patterns = ["*.csv", "report_*.xlsx"]
+exclude_patterns = []
 events = ["create", "modify"]
 
 [[rules.actions]]
@@ -176,7 +177,7 @@ preserve_structure = true
 | `rules[].watch` | `target` | string | ○ | 検知対象: `file` / `directory` / `both` |
 | `rules[].watch` | `include_hidden` | bool | ○ | 隠しファイル・隠しフォルダを検知対象に含めるか。`true`: 含める / `false`: 除外。Windows の `FILE_ATTRIBUTE_HIDDEN` 属性で判定 |
 | `rules[].watch` | `patterns` | string[] | ※ | glob パターン（`regex` と排他） |
-| `rules[].watch` | `exclude_patterns` | string[] | | 除外 glob パターン |
+| `rules[].watch` | `exclude_patterns` | string[] | ○ | 除外 glob パターン。除外なしの場合は空配列 `[]` を指定 |
 | `rules[].watch` | `regex` | string | ※ | 正規表現（`patterns` と排他） |
 | `rules[].watch` | `events` | string[] | ○ | 検知イベント: `create` / `modify` / `delete` / `rename` |
 | `rules[].actions[]` | `type` | string | ○ | `copy` / `move` / `command` / `execute` |
@@ -187,7 +188,7 @@ preserve_structure = true
 | `rules[].actions[]` | `command` | string | command 時 ○ | 実行するコマンド文字列 |
 | `rules[].actions[]` | `program` | string | execute 時 ○ | 実行ファイルの絶対パス |
 | `rules[].actions[]` | `args` | string[] | execute 時 ○ | 引数リスト |
-| `rules[].actions[]` | `working_dir` | string | | command / execute のカレントディレクトリ |
+| `rules[].actions[]` | `working_dir` | string | command/execute 時 ○ | command / execute のカレントディレクトリ。空文字列 `""` の場合は watcher プロセスの CWD を使用。絶対パスを推奨 |
 
 ※ `patterns` と `regex` はいずれか一方を必ず指定する（両方指定・両方省略はエラー）。
 
@@ -222,7 +223,7 @@ preserve_structure = true
 | `patterns` / `regex` 排他 | 両方指定・両方省略はエラー |
 | `events` 空チェック | 空配列はエラー |
 | `actions` 空チェック | 空配列はエラー |
-| `type` ごとの必須フィールド | `copy`/`move` → `destination`, `overwrite`, `preserve_structure`。`command` → `shell`, `command`。`execute` → `program`, `args` |
+| `type` ごとの必須フィールド | `copy`/`move` → `destination`, `overwrite`, `preserve_structure`。`command` → `shell`, `command`, `working_dir`。`execute` → `program`, `args`, `working_dir` |
 | `watch.path` 存在確認 | 指定パスが実在すること |
 | `destination` 存在確認 | copy/move 時、宛先が実在すること（`preserve_structure = true` の場合はルートのみ） |
 | 循環参照チェック | §13.1 参照 |
@@ -318,6 +319,7 @@ Ctrl+C（`SIGINT`）を受信した場合の動作:
 
 - 過去の処理済みファイルの記録は保持しない（**ステートレス**）
 - 再起動のたびに既存ファイルが再処理される
+- **`events` フィルタは適用しない**。既存ファイル/フォルダがルールの `target` および `patterns` / `regex` にマッチすれば、イベント種別に関わらず無条件でアクションを実行する（初回スキャン時はイベント種別の概念がないため）
 
 ### 5.4 設定変更の反映
 
@@ -410,6 +412,8 @@ TOML ファイル内の定義順（上から順）に評価する。同一ルー
   → マッチ → アクションチェーン実行
 ```
 
+`patterns` / `exclude_patterns` / `regex` のマッチは、`target` で指定された対象（ファイル名またはディレクトリ名）の**名前部分**（パスを含まないファイル名・フォルダ名）に対して行う。
+
 ### 8.4 rename イベント
 
 rename イベントでは、**リネーム後のファイル名**に対してパターンマッチを行う。
@@ -488,6 +492,7 @@ command = "echo {{result}}: {Name}"
 | フォルダコピー | `target = "directory"` の場合、フォルダの中身ごとすべて再帰コピー |
 | 異ボリューム | OS がコピーを処理するため問題なし |
 | destination 不在 | 起動時バリデーションでエラー。ただし `preserve_structure = true` の場合はルートディレクトリが存在すれば OK（中間ディレクトリは自動作成） |
+| overwrite = false でスキップ時 | **正常扱い**（アクションチェーン継続）。WARN レベルのログを出力する |
 | リトライ | ファイル I/O エラー時、`retry_count` / `retry_interval_ms` に従いリトライ |
 
 ### 10.2 move（移動）
@@ -499,6 +504,7 @@ command = "echo {{result}}: {Name}"
 | フォルダ移動 | フォルダの中身ごとすべて移動 |
 | 異ボリューム | `rename` API がエラーの場合、内部で `copy → 元ファイル削除` にフォールバック |
 | destination 不在 | copy と同様 |
+| overwrite = false でスキップ時 | copy と同様（正常扱い、アクションチェーン継続、WARN ログ出力） |
 | リトライ | copy と同様 |
 
 ### 10.3 command（コマンド実行）
@@ -510,7 +516,7 @@ command = "echo {{result}}: {Name}"
 | タイムアウト | なし |
 | stdout / stderr | ログに記録しない |
 | 終了コード | 判定しない |
-| `working_dir` | 指定された場合はカレントディレクトリとして設定 |
+| `working_dir` | 必須フィールド。空文字列 `""` の場合は watcher プロセスの CWD を使用。絶対パスを推奨 |
 
 #### `shell` 設定によるコマンド起動方式
 
@@ -529,6 +535,7 @@ command = "echo {{result}}: {Name}"
 | タイムアウト | なし |
 | stdout / stderr | ログに記録しない |
 | 終了コード | 判定しない |
+| `working_dir` | 必須フィールド。空文字列 `""` の場合は watcher プロセスの CWD を使用。絶対パスを推奨 |
 
 ### 10.5 アクションチェーン
 
@@ -735,7 +742,7 @@ JSON 構造化ログ。1 行 1 JSON オブジェクト。
 | `target` | string | ○ | `file` / `directory` / `both` |
 | `include_hidden` | bool | ○ | 隠しファイル・隠しフォルダを含めるか: `true` / `false` |
 | `patterns` | string | ※ | glob パターン（`\|` 区切りで複数） |
-| `exclude_patterns` | string | | 除外パターン（`\|` 区切り） |
+| `exclude_patterns` | string | ○ | 除外パターン（`\|` 区切り）。除外なしの場合は空欄（空配列に変換） |
 | `regex` | string | ※ | 正規表現（`patterns` と排他） |
 | `events` | string | ○ | イベント種別（`\|` 区切り） |
 | `action_type` | string | ○ | `copy` / `move` / `command` / `execute` |
@@ -746,7 +753,7 @@ JSON 構造化ログ。1 行 1 JSON オブジェクト。
 | `action_command` | string | command 時 ○ | 実行コマンド |
 | `action_program` | string | execute 時 ○ | 実行ファイル |
 | `action_args` | string | execute 時 ○ | 引数（`\|` 区切り） |
-| `action_working_dir` | string | | 作業ディレクトリ |
+| `action_working_dir` | string | command/execute 時 ○ | 作業ディレクトリ。空欄の場合は空文字列（watcher プロセスの CWD を使用） |
 
 ※ `patterns` と `regex` はいずれか一方を必ず指定。
 
