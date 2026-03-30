@@ -1,4 +1,5 @@
 mod error;
+pub mod integrity;
 use error::AppError;
 
 fn might_fail(ok: bool) -> Result<String, AppError> {
