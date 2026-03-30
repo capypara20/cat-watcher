@@ -17,4 +17,7 @@ pub enum AppError {
 
     #[error("アクション実行エラー: {0}")]
     Action(String),
+
+    #[error("ハッシュ不一致エラー: コピー元={src} コピー先={dst}")]
+    HashMismatch { src: String, dst: String },
 }

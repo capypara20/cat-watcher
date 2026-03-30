@@ -1,4 +1,8 @@
+mod actions;
+mod config;
 mod error;
+mod hash;
+
 use error::AppError;
 
 fn might_fail(ok: bool) -> Result<String, AppError> {
@@ -16,3 +20,4 @@ fn main() {
         Err(e)  => println!("エラー発生: {}", e),
     }
 }
+
