@@ -40,11 +40,13 @@ pub fn copy_with_verification(
 ) -> Result<(), AppError> {
     let src_hash = compute_blake3_hash(source)?;
 
+    let mut last_dst_hash = String::new();
+
     for attempt in 0..=retry_count {
         std::fs::copy(source, destination)?;
 
-        let dst_hash = compute_blake3_hash(destination)?;
-        if src_hash == dst_hash {
+        last_dst_hash = compute_blake3_hash(destination)?;
+        if src_hash == last_dst_hash {
             return Ok(());
         }
 
@@ -54,17 +56,15 @@ pub fn copy_with_verification(
                 attempt + 1,
                 retry_count + 1,
                 src_hash,
-                dst_hash,
+                last_dst_hash,
             );
-        } else {
-            return Err(AppError::Action(format!(
-                "整合性検証失敗: ハッシュ不一致 (src={}, dst={})",
-                src_hash, dst_hash,
-            )));
         }
     }
 
-    unreachable!()
+    Err(AppError::Action(format!(
+        "整合性検証失敗: ハッシュ不一致 (src={}, dst={})",
+        src_hash, last_dst_hash,
+    )))
 }
 
 #[cfg(test)]
