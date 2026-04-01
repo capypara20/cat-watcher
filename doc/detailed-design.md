@@ -1,8 +1,9 @@
+
 # 詳細設計書 — ファイル常駐監視アプリケーション
 
 | 項目 | 内容 |
 |------|------|
-| 文書版数 | 1.0 |
+| 文書版数 | 1.1 |
 | 作成日 | 2025-07 |
 | 関連文書 | [requirements.md](requirements.md)（要件定義書）/ [design.md](design.md)（設計メモ） |
 
@@ -163,6 +164,7 @@ type = "copy"
 destination = "C:/data/backup"
 overwrite = false
 preserve_structure = true
+verify_integrity = true
 ```
 
 #### ルール設定項目
@@ -183,6 +185,7 @@ preserve_structure = true
 | `rules[].actions[]` | `destination` | string | copy/move 時 ○ | コピー/移動先ディレクトリ |
 | `rules[].actions[]` | `overwrite` | bool | copy/move 時 ○ | 同名ファイル存在時に上書きするか |
 | `rules[].actions[]` | `preserve_structure` | bool | copy/move 時 ○ | サブディレクトリ構造を維持するか |
+| `rules[].actions[]` | `verify_integrity` | bool | copy/move 時 ○ | コピー/移動後に BLAKE3 ハッシュ値比較で完全性を検証するか |
 | `rules[].actions[]` | `shell` | string | command 時 ○ | シェル種別: `cmd` / `powershell` / `pwsh` |
 | `rules[].actions[]` | `command` | string | command 時 ○ | 実行するコマンド文字列 |
 | `rules[].actions[]` | `program` | string | execute 時 ○ | 実行ファイルの絶対パス |
@@ -222,7 +225,7 @@ preserve_structure = true
 | `patterns` / `regex` 排他 | 両方指定・両方省略はエラー |
 | `events` 空チェック | 空配列はエラー |
 | `actions` 空チェック | 空配列はエラー |
-| `type` ごとの必須フィールド | `copy`/`move` → `destination`, `overwrite`, `preserve_structure`。`command` → `shell`, `command`。`execute` → `program`, `args` |
+| `type` ごとの必須フィールド | `copy`/`move` → `destination`, `overwrite`, `preserve_structure`, `verify_integrity`。`command` → `shell`, `command`。`execute` → `program`, `args` |
 | `watch.path` 存在確認 | 指定パスが実在すること |
 | `destination` 存在確認 | copy/move 時、宛先が実在すること（`preserve_structure = true` の場合はルートのみ） |
 | 循環参照チェック | §13.1 参照 |
@@ -488,7 +491,8 @@ command = "echo {{result}}: {Name}"
 | フォルダコピー | `target = "directory"` の場合、フォルダの中身ごとすべて再帰コピー |
 | 異ボリューム | OS がコピーを処理するため問題なし |
 | destination 不在 | 起動時バリデーションでエラー。ただし `preserve_structure = true` の場合はルートディレクトリが存在すれば OK（中間ディレクトリは自動作成） |
-| リトライ | ファイル I/O エラー時、`retry_count` / `retry_interval_ms` に従いリトライ |
+| リトライ | 「コピー＋完全性検証」を 1 つのリトライ単位とする。I/O エラー・ハッシュ不一致のいずれも同じ `retry_count` を消費する。不一致時は宛先ファイルを削除してからリトライする（`overwrite = false` でもリトライ可能にするため）。リトライごとに WARN ログ、最終失敗時に ERROR ログを出力 |
+| 完全性検証 | `verify_integrity = true` の場合、コピー後にソースと宛先の BLAKE3 ハッシュ値を比較する。最終的にハッシュ不一致で失敗した場合は不正な宛先ファイルを削除する |
 
 ### 10.2 move（移動）
 
@@ -499,7 +503,8 @@ command = "echo {{result}}: {Name}"
 | フォルダ移動 | フォルダの中身ごとすべて移動 |
 | 異ボリューム | `rename` API がエラーの場合、内部で `copy → 元ファイル削除` にフォールバック |
 | destination 不在 | copy と同様 |
-| リトライ | copy と同様 |
+| リトライ | 異ボリュームフォールバック時は「コピー＋完全性検証」を 1 つのリトライ単位とする（copy と同様）。ハッシュ不一致時は宛先ファイルを削除してからリトライする |
+| 完全性検証 | `verify_integrity = true` の場合、同一ボリューム `rename` ではスキップ（データ転送なし）。異ボリュームフォールバック時は `copy` 後・**元ファイル削除前**に BLAKE3 ハッシュ値を比較する。最終的にハッシュ不一致で失敗した場合は不正な宛先ファイルを削除し、元ファイルは保持する（データ消失防止） |
 
 ### 10.3 command（コマンド実行）
 
@@ -541,10 +546,77 @@ command = "echo {{result}}: {Name}"
 
 | 項目 | 仕様 |
 |------|------|
-| 対象 | ファイル I/O エラーのみ（ファイルロック、一時的な I/O エラー） |
+| 対象 | ファイル I/O エラーおよびハッシュ不一致（`verify_integrity = true` 時） |
 | 設定 | `global.toml` の `retry_count` / `retry_interval_ms` |
-| 適用範囲 | `copy` / `move` のファイル操作時 |
+| 適用範囲 | `copy` / `move` のファイル操作時。「コピー（または移動）＋完全性検証」を **1 つの操作単位**としてリトライする。I/O エラーとハッシュ不一致は同じカウンタを消費する |
 | 適用外 | `command` / `execute`（fire-and-forget）。設定エラー等の致命的エラー |
+| 不一致時の処理 | ハッシュ不一致でリトライする前に宛先ファイルを削除する（`overwrite = false` でもリトライ可能にするため） |
+| ログレベル | リトライ中は WARN、最終失敗時は ERROR |
+| 最終失敗時 | 不正な宛先ファイルが残っている場合は削除する。move の異ボリュームフォールバック時は元ファイルを保持する |
+
+### 10.7 完全性検証（BLAKE3 ハッシュ比較）
+
+`verify_integrity = true` が設定された `copy` / `move` アクションにおいて、ファイル転送後にソースと宛先の BLAKE3 ハッシュ値を比較し、データの完全性を検証する。
+
+#### アルゴリズム選定理由
+
+| 項目 | BLAKE3 | MD5 | SHA-256 |
+|------|--------|-----|---------|
+| 速度 | ★★★（SIMD/マルチスレッド対応。数 GB/s） | ★★ | ★ |
+| 安全性 | 暗号学的ハッシュ | 衝突脆弱性あり | 安全 |
+| 出力サイズ | 256bit (32 bytes) | 128bit | 256bit |
+| 大容量ファイル | 内部 Merkle tree 構造で高速 | 線形 | 線形 |
+
+大容量ファイル（数 GB 以上）でも高速にハッシュ計算が可能な BLAKE3 を採用する。
+
+#### 検証フロー
+
+**copy の場合（verify_integrity = true）:**
+```
+retry_remaining = retry_count
+loop:
+  1. ソースファイルを宛先にコピー
+     → I/O エラー発生時は手順 6 へ
+  2. ソースファイルの BLAKE3 ハッシュを計算
+  3. 宛先ファイルの BLAKE3 ハッシュを計算
+  4. 一致 → integrity_verified ログ（INFO）→ 成功
+  5. 不一致 → integrity_failed ログ → 宛先ファイルを削除
+  6. retry_remaining > 0 → WARN ログ（action_retry）
+     → retry_interval_ms 待機 → retry_remaining -= 1 → loop へ
+  7. retry_remaining == 0 → ERROR ログ（action_failed）
+     → 不正な宛先ファイルが残っていれば削除 → アクションエラー
+```
+
+**move（異ボリュームフォールバック・verify_integrity = true）の場合:**
+```
+1. rename 失敗 → copy → delete フォールバック開始
+retry_remaining = retry_count
+loop:
+  2. ソースファイルを宛先にコピー
+     → I/O エラー発生時は手順 7 へ
+  3. ソースファイルの BLAKE3 ハッシュを計算
+  4. 宛先ファイルの BLAKE3 ハッシュを計算
+  5. 一致 → integrity_verified ログ（INFO）→ 元ファイルを削除 → 成功
+  6. 不一致 → integrity_failed ログ → 宛先ファイルを削除
+  7. retry_remaining > 0 → WARN ログ（action_retry）
+     → retry_interval_ms 待機 → retry_remaining -= 1 → loop へ
+  8. retry_remaining == 0 → ERROR ログ（action_failed）
+     → 不正な宛先ファイルが残っていれば削除
+     → 元ファイルは保持（データ消失防止）→ アクションエラー
+```
+
+**move（同一ボリューム rename）の場合:**
+- `rename` はメタデータ変更のみでデータ転送が発生しないため、**ハッシュ検証をスキップ**する
+
+#### フォルダの検証
+
+`target = "directory"` の場合、フォルダ内の各ファイルを個別に BLAKE3 ハッシュ検証する。1 ファイルでも不一致があればアクションエラーとする。
+
+#### ハッシュ計算の実装方針
+
+- `blake3` クレートの `Hasher` を使用し、ストリーミング（チャンク単位）でハッシュを計算する
+- バッファサイズはデフォルト 64 KiB（`blake3` クレートの推奨値に準拠）
+- `dry_run = true` の場合はハッシュ検証をスキップする
 
 ---
 
@@ -556,7 +628,7 @@ command = "echo {{result}}: {Name}"
 |------|-----|------|
 | **致命的エラー** | 設定パース失敗、バリデーションエラー | ログ出力 → 終了コード `1` で終了 |
 | **致命的エラー（実行時）** | watch_path 消失 | ログ出力 → 終了コード `2` で終了 |
-| **回復可能エラー** | ファイルロック、一時的 I/O エラー | リトライ → 全リトライ失敗時はログ出力してスキップ |
+| **回復可能エラー** | ファイルロック、一時的 I/O エラー、ハッシュ不一致 | リトライ → 全リトライ失敗時はログ出力してスキップ |
 | **アクションエラー** | destination 書き込み失敗、プロセス起動失敗 | ログ出力 → アクションチェーン中断 → 次のイベント処理へ |
 
 ### 11.2 watch_path 消失
@@ -601,6 +673,8 @@ JSON 構造化ログ。1 行 1 JSON オブジェクト。
 | `error` | string | | エラーメッセージ |
 | `retry` | u32 | | リトライ回数 |
 | `duration_ms` | u64 | | 処理時間（ミリ秒） |
+| `source_hash` | string | | ソースファイルの BLAKE3 ハッシュ値（完全性検証時） |
+| `dest_hash` | string | | 宛先ファイルの BLAKE3 ハッシュ値（完全性検証時） |
 
 ### 12.3 イベント識別子
 
@@ -613,6 +687,8 @@ JSON 構造化ログ。1 行 1 JSON オブジェクト。
 | `action_completed` | アクション正常完了 |
 | `action_failed` | アクション失敗 |
 | `action_retry` | アクションリトライ |
+| `integrity_verified` | ハッシュ値比較による完全性検証成功 |
+| `integrity_failed` | ハッシュ値比較による完全性検証失敗 |
 | `chain_aborted` | アクションチェーン中断 |
 | `validation_error` | 設定バリデーションエラー |
 | `watch_path_lost` | 監視ディレクトリ消失 |
@@ -742,6 +818,7 @@ JSON 構造化ログ。1 行 1 JSON オブジェクト。
 | `action_destination` | string | copy/move 時 ○ | コピー/移動先 |
 | `action_overwrite` | bool | copy/move 時 ○ | 上書き許可 |
 | `action_preserve_structure` | bool | copy/move 時 ○ | 構造維持 |
+| `action_verify_integrity` | bool | copy/move 時 ○ | BLAKE3 ハッシュ値比較による完全性検証 |
 | `action_shell` | string | command 時 ○ | `cmd` / `powershell` / `pwsh` |
 | `action_command` | string | command 時 ○ | 実行コマンド |
 | `action_program` | string | execute 時 ○ | 実行ファイル |
@@ -808,3 +885,4 @@ JSON 構造化ログ。1 行 1 JSON オブジェクト。
 | CLI 引数 | `clap` |
 | シグナルハンドリング | `tokio::signal` |
 | CSV パース | `csv` + `serde` |
+| ハッシュ（完全性検証） | `blake3` |

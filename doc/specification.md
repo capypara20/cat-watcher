@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 |------|------|
-| 文書版数 | 1.0 |
+| 文書版数 | 1.1 |
 | 作成日 | 2025-07 |
 | 対象読者 | システム管理者・運用担当者 |
 
@@ -115,6 +115,7 @@ type = "copy"                      # アクション種別: copy / move / comman
 destination = "C:/data/backup"     # コピー先ディレクトリ
 overwrite = false                  # 同名ファイルが存在する場合: true=上書き / false=スキップ
 preserve_structure = true          # true: サブディレクトリ構造を維持 / false: フラット配置
+verify_integrity = true            # true: BLAKE3 ハッシュ値比較で完全性検証 / false: 検証しない
 ```
 
 #### 検知対象（target）と再帰監視（recursive）の組み合わせ
@@ -152,6 +153,7 @@ type = "copy"                     # または "move"
 destination = "C:/data/backup"
 overwrite = false
 preserve_structure = true
+verify_integrity = true            # BLAKE3 ハッシュ値比較でコピー/移動の完全性を検証
 ```
 
 **command（シェルコマンド実行）:**
@@ -183,6 +185,7 @@ type = "copy"
 destination = "C:/data/backup"
 overwrite = false
 preserve_structure = true
+verify_integrity = true
 
 # 2. コピー完了後にコマンド実行
 [[rules.actions]]
@@ -236,6 +239,7 @@ CSV は **BOM 付き UTF-8** で保存してください（Excel で「CSV UTF-8
 | `action_destination` | コピー/移動先 | `C:/data/backup` |
 | `action_overwrite` | 上書き | `false` |
 | `action_preserve_structure` | 構造維持 | `true` |
+| `action_verify_integrity` | BLAKE3 ハッシュ検証 | `true` |
 | `action_shell` | シェル種別 | `powershell` |
 | `action_command` | コマンド | `Write-Host '{Name}'` |
 | `action_program` | 実行ファイル | `C:/tools/proc.exe` |
@@ -444,6 +448,7 @@ type = "copy"
 destination = "C:/data/backup"
 overwrite = false
 preserve_structure = true
+verify_integrity = true
 ```
 
 ### 9.2 画像ファイルを検知してサムネイル生成 + アップロード
@@ -493,6 +498,7 @@ type = "copy"
 destination = "C:/data/processed"
 overwrite = false
 preserve_structure = false
+verify_integrity = true
 ```
 
 ### 9.4 ログファイルをアーカイブに移動してログ記録
@@ -515,6 +521,7 @@ type = "move"
 destination = "C:/archive/logs"
 overwrite = false
 preserve_structure = false
+verify_integrity = true
 
 [[rules.actions]]
 type = "command"
@@ -543,6 +550,7 @@ type = "move"
 destination = "C:/data/quarantine"
 overwrite = false
 preserve_structure = false
+verify_integrity = false
 ```
 
 ---
@@ -579,6 +587,7 @@ preserve_structure = false
 | ファイルが他プロセスにロックされている | `retry_count` と `retry_interval_ms` を増やしてください |
 | ディスク容量不足 | 宛先ドライブの空き容量を確認してください |
 | 権限不足 | watcher.exe の実行ユーザーに宛先への書き込み権限があるか確認してください |
+| ハッシュ値が不一致（`integrity_failed`） | ディスクの健全性を確認してください。`verify_integrity = true` の場合、コピー/移動後に BLAKE3 ハッシュ値を比較します。不一致時は宛先ファイルを削除して自動リトライされます（`retry_count` 回まで）。全リトライ失敗後は不正な宛先ファイルが削除されます。move の異ボリュームフォールバック時は元ファイルは保持されます。頻発する場合はストレージ障害の可能性があります |
 
 ### 10.4 アプリケーションが突然終了する（終了コード 2）
 

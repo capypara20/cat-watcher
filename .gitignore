@@ -1,4 +1,3 @@
 /target
-.github/*
 data/*
 Cargo.lock
