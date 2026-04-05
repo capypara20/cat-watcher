@@ -1,0 +1,102 @@
+# ============================================================
+# ルール1: CSV ファイルをバックアップ（copy）
+# ============================================================
+[[rules]]
+name = "csv-backup"
+enabled = true
+
+[rules.watch]
+path = "C:/data/incoming"
+recursive = true
+target = "file"
+include_hidden = false
+patterns = ["*.csv", "report_*.xlsx"]
+exclude_patterns = ["temp_*"]
+events = ["create", "modify"]
+
+[[rules.actions]]
+type = "copy"
+destination = "C:/data/backup"
+overwrite = false
+preserve_structure = true
+verify_integrity = true
+
+# ============================================================
+# ルール2: 処理済みファイルを移動（move）+ コマンド実行チェーン
+# ============================================================
+[[rules]]
+name = "processed-move"
+enabled = true
+
+[rules.watch]
+path = "C:/data/processed"
+recursive = false
+target = "file"
+include_hidden = false
+patterns = ["*.dat"]
+exclude_patterns = []
+events = ["create"]
+
+[[rules.actions]]
+type = "move"
+destination = "C:/data/archive"
+overwrite = true
+preserve_structure = false
+verify_integrity = true
+
+[[rules.actions]]
+type = "command"
+shell = "powershell"
+command = "Write-Host 'Moved: {Name} to {Destination}'"
+working_dir = ""
+
+# ============================================================
+# ルール3: 正規表現でマッチ + execute（外部プロセス直接起動）
+# ============================================================
+[[rules]]
+name = "log-processor"
+enabled = true
+
+[rules.watch]
+path = "C:/logs/app"
+recursive = true
+target = "file"
+include_hidden = false
+regex = "^app_\\d{8}\\.log$"
+exclude_patterns = []
+events = ["create", "modify", "rename"]
+
+[[rules.actions]]
+type = "execute"
+program = "C:/tools/log-analyzer.exe"
+args = ["{FullName}", "--output", "C:/reports/{BaseName}_{Date}.html"]
+working_dir = "C:/tools"
+
+# ============================================================
+# ルール4: ディレクトリ監視 + cmd でバッチ実行
+# ============================================================
+[[rules]]
+name = "dir-watcher"
+enabled = true
+
+[rules.watch]
+path = "C:/data/uploads"
+recursive = false
+target = "directory"
+include_hidden = true
+patterns = ["batch_*"]
+exclude_patterns = ["batch_temp_*"]
+events = ["create"]
+
+[[rules.actions]]
+type = "copy"
+destination = "C:/data/dir-backup"
+overwrite = false
+preserve_structure = false
+verify_integrity = false
+
+[[rules.actions]]
+type = "command"
+shell = "cmd"
+command = "echo Directory detected: {Name} at {DateTime}"
+working_dir = "C:/data"

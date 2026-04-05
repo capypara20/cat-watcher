@@ -1,3 +1,5 @@
+use core::error;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("設定ファイルエラー: {0}")]
@@ -17,4 +19,7 @@ pub enum AppError {
 
     #[error("アクション実行エラー: {0}")]
     Action(String),
+
+    #[error("ファイルハッシュ値比較エラー: {0}")]
+    FileHash(String),
 }
