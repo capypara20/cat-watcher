@@ -1,9 +1,10 @@
-use std::{fmt::format, path::Path};
+use std::path::Path;
 use regex::Regex;
 use serde::Deserialize;
 use globset::Glob;
-use crate::error::AppError;
 
+use crate::error::AppError;
+use crate::placeholder::validate_placeholders;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -258,4 +259,3 @@ fn validate_action(action: &ActionConfig, rule_name: &str) -> Result<(), AppErro
 	}
 	Ok(())
 }
-

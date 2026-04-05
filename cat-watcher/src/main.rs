@@ -2,6 +2,7 @@ use crate::error::AppError;
 use std::path::Path;
 mod error;
 mod config;
+mod placeholder;
 
 fn main() -> Result<(), AppError>{
 	let global_conf_path = "config/global.toml";
