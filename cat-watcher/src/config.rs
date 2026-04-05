@@ -1,6 +1,9 @@
-use std::path::{self, Path};
-use crate::error::AppError;
+use std::{fmt::format, path::Path};
+use regex::Regex;
 use serde::Deserialize;
+use globset::Glob;
+use crate::error::AppError;
+
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -175,6 +178,29 @@ pub fn validate_rules_config(config: &RulesConfig) -> Result<(), AppError> {
 		if !watch_path.is_dir() {
 			return Err(AppError::Validation(format!("監視ルール名 {} の watch.path が存在しません: {}", rule.name, watch_path.display())));
 		}
+
+		// globパターンチェック
+		if let Some(patterns) = &rule.watch.patterns{
+			for pt in patterns {
+				Glob::new(pt).map_err(|e| AppError::Validation(
+					format!("監視ルール名 {} の patterns に無効な glob があります '{}': {}",rule.name, pt, e)
+				))?;
+			}
+		}
+
+		// 正規表現チェック
+		if let Some(regex_str) = &rule.watch.regex{
+			Regex::new(regex_str).map_err(|e| AppError::Validation(
+				format!("監視ルール名 {} の regex に無効な正規表現があります '{}': {}", rule.name, regex_str, e)
+			))?;
+		}
+
+		for glob in &rule.watch.exclude_patterns{
+			Glob::new(glob).map_err(|e| AppError::Validation(
+				format!("監視ルール名 {} の exclude_patterns に無効な glob があります '{}': {}", rule.name, glob, e)
+			))?;
+		}
+
 		Ok(())
 	})?;
 
@@ -232,3 +258,4 @@ fn validate_action(action: &ActionConfig, rule_name: &str) -> Result<(), AppErro
 	}
 	Ok(())
 }
+
