@@ -1,0 +1,7 @@
+[global]
+log_level = "info"
+log_file = "C:\\Users\\Administrator\\Developer\\cat-watcher-workspace\\.logs\\test.v"
+log_rotation = "daily"
+retry_count = 3
+retry_interval_ms = 1000
+dry_run = false

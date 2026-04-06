@@ -1,18 +1,19 @@
+use crate::error::AppError;
+use std::path::Path;
 mod error;
-use error::AppError;
+mod config;
+mod placeholder;
 
-fn might_fail(ok: bool) -> Result<String, AppError> {
-    if ok {
-        Ok("成功！".to_string())
-    } else {
-        // Err(AppError::Config("global.toml が見つかりません".to_string()))
-        Err(AppError::Validation("バリデーションチェックエラー".to_string()))
-    }
-}
+fn main() -> Result<(), AppError>{
+	let global_conf_path = "config/global.toml";
+	let global_conf = config::load_global_config(&Path::new(global_conf_path))?;
+	// println!("{:#?}", global_conf);
 
-fn main() {
-    match might_fail(false) {
-        Ok(msg) => println!("{}", msg),
-        Err(e)  => println!("エラー発生: {}", e),
-    }
+	let rules_conf_path = "config/rules.toml";
+	let rules_conf = config::load_rules_config(&Path::new(rules_conf_path))?;
+	// println!("{:#?}", rules_conf);
+
+	config::validate_global_config(&global_conf)?;
+	config::validate_rules_config(&rules_conf)?;
+	Ok(())	
 }
