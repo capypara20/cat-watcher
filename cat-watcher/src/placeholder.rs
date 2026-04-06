@@ -1,5 +1,11 @@
+use std::sync::LazyLock;
+
 use regex::Regex;
 use crate::error::AppError;
+
+static PLACEHOLDER_REGEX: LazyLock<Regex> = LazyLock::new(|| 
+	Regex::new(r"\{\{|\}\}|\{([A-Za-z]+)\}").unwrap()
+);
 
 pub fn validate_placeholders(text: &str, rule_name: &str, field_name: &str) -> Result<(), AppError> {
 	// 有効なブレースホルダー
@@ -9,8 +15,7 @@ pub fn validate_placeholders(text: &str, rule_name: &str, field_name: &str) -> R
         "Date", "Time", "DateTime",
     ];
 
-	let re = Regex::new(r"\{\{|\}\}|\{([A-Za-z]+)\}").unwrap();
-	for caps in re.captures_iter(text){
+	for caps in PLACEHOLDER_REGEX.captures_iter(text){
 		if let Some(name) = caps.get(1){
 			let placeholder = name.as_str();
 			if !valid.contains(&placeholder){
