@@ -173,6 +173,7 @@ pub fn validate_rules_config(config: &RulesConfig) -> Result<(), AppError> {
 		
 		for action in &rule.actions{
 			validate_action(action, &rule.name)?;
+			validate_action_placeholders(action, &rule.name)?;
 		}
 
 		let watch_path = Path::new(&rule.watch.path);
@@ -304,6 +305,29 @@ fn validate_action(action: &ActionConfig, rule_name: &str) -> Result<(), AppErro
 			}
 		}
 	}
+	Ok(())
+}
+
+fn validate_action_placeholders(action: &ActionConfig, rule_name: &str) -> Result<(), AppError> {
+	let fields = [
+		("action.destination", &action.destination),
+		("action.command", &action.command),
+		("action.working_dir", &action.working_dir),
+		("action.program", &action.program),
+	];
+
+	for (field_name, field_value) in fields {
+		if let Some(value) = field_value {
+			validate_placeholders(value, rule_name, field_name)?;
+		}
+	}
+
+	if let Some(args) = &action.args {
+		for (index, arg) in args.iter().enumerate() {
+			validate_placeholders(arg, rule_name, &format!("action.args[{}]", index))?;
+		}
+	}
+
 	Ok(())
 }
 
