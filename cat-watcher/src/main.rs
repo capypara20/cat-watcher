@@ -4,6 +4,7 @@ use std::path::PathBuf;
 mod config;
 mod error;
 mod placeholder;
+mod watcher;
 
 #[derive(Parser)]
 struct Cli {
@@ -19,10 +20,11 @@ struct Cli {
     validate: bool,
 }
 
-fn main() -> Result<(), AppError> {
+#[tokio::main]
+async fn main() -> Result<(), AppError> {
     let cli = Cli::parse();
 
-    let result = run(&cli);
+    let result = run(&cli).await;
     match result {
         Ok(_) => std::process::exit(0),
         Err(e) => {
@@ -32,7 +34,7 @@ fn main() -> Result<(), AppError> {
     };
 }
 
-fn run(cli: &Cli) -> Result<(), AppError> {
+async fn run(cli: &Cli) -> Result<(), AppError> {
     let global_config = config::load_global_config(&cli.global)?;
     let rules_conf = config::load_rules_config(&cli.rules)?;
 
@@ -43,5 +45,6 @@ fn run(cli: &Cli) -> Result<(), AppError> {
         println!("バリデーション処理成功");
         return Ok(());
     }
-    Ok(())
+	watcher::start_watching(&rules_conf.rules).await?;
+    Ok(())	
 }
