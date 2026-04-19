@@ -1,6 +1,8 @@
 // cat-watcher/src/actions/mod.rs
+pub mod command;
 pub mod common;
 pub mod copy;
+pub mod execute;
 pub mod r#move;
 
 use std::path::Path;
@@ -34,10 +36,10 @@ pub async fn execute_chain(
                 }
             }
             ActionType::Command => {
-                eprintln!("[WARN] command アクションは未実装 (Phase 11)");
+                command::execute(action, &ctx, global).await?;
             }
             ActionType::Execute => {
-                eprintln!("[WARN] execute アクションは未実装 (Phase 11)");
+                execute::execute(action, &ctx, global).await?;
             }
         }
     }
