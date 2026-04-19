@@ -27,9 +27,11 @@ pub async fn execute_chain(
                     ctx.destination = dest_file.to_string_lossy().replace('\\', "/");
                 }
             }
-            // 後続フェーズで実装
             ActionType::Move => {
-                eprintln!("[WARN] move アクションは未実装 (Phase 10)");
+                let result = r#move::execute(action, src, &ctx, global).await?;
+                if let Some(dest_file) = result {
+                    ctx.destination = dest_file.to_string_lossy().replace('\\', "/");
+                }
             }
             ActionType::Command => {
                 eprintln!("[WARN] command アクションは未実装 (Phase 11)");
