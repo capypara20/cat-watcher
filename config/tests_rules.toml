@@ -1,0 +1,19 @@
+[[rules]]
+name = "Hello World!!"
+enabled = true
+
+[rules.watch]
+path = "C:/Users/Administrator/Developer/cat-watcher-workspace/data"
+recursive = false
+target = "directory"
+include_hidden = false
+patterns = ["*.*"]
+exclude_patterns = ["temp_*"]
+events = ["create", "modify"]
+
+[[rules.actions]]
+type = "copy"
+destination = "C:/Users/Administrator/Developer/cat-watcher-workspace/data/{Date}/{Time}"
+overwrite = false
+preserve_structure = true
+verify_integrity = true

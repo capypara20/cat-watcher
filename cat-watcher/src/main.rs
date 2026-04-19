@@ -5,6 +5,8 @@ mod config;
 mod error;
 mod placeholder;
 mod watcher;
+mod router;
+mod actions;
 
 #[derive(Parser)]
 struct Cli {
@@ -45,6 +47,6 @@ async fn run(cli: &Cli) -> Result<(), AppError> {
         println!("バリデーション処理成功");
         return Ok(());
     }
-	watcher::start_watching(&rules_conf.rules).await?;
-    Ok(())	
+	watcher::start_watching(&rules_conf.rules, &global_config.global).await?;
+    Ok(())
 }

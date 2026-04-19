@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
-use crate::config::Rule;
+use crate::config::{Global, Rule};
 use crate::error::AppError;
 
-pub async fn start_watching(rules: &[Rule]) -> Result<(), AppError> {
-    let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(100);
+pub async fn start_watching(rules: &[Rule], global: &Global) -> Result<(), AppError> {
+    let (tx, rx) = mpsc::channel::<notify::Result<Event>>(100);
 
     let mut watcher = recommended_watcher(move |res| {
         let _ = tx.blocking_send(res);
@@ -39,24 +39,8 @@ pub async fn start_watching(rules: &[Rule]) -> Result<(), AppError> {
         })?;
         println!("監視開始: {} ({:?})", path.display(), mode);
     }
-
-    loop {
-        tokio::select! {
-            Some(res) = rx.recv() => {
-                match res {
-                    Ok(event) => {
-                        println!("イベント: {:?} - {:?}", event.kind, event.paths);
-                    }
-                    Err(e) => {
-                        eprintln!("watcher エラー: {}", e);
-                    }
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                println!("終了シグナル受信、watcher を停止します...");
-                break;
-            }
-        }
-    }
+    // watcher.rs の start_watching 内
+    let compiled_rules = crate::router::compile_rules(rules)?;
+    crate::router::run_router(rx, &compiled_rules, global).await?;
     Ok(())
 }

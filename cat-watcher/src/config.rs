@@ -32,7 +32,7 @@ pub enum WatchTarget {
     Both,      //両方か
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Event {
     Create,
@@ -256,6 +256,31 @@ fn check_circular_references(rules: &[Rule]) -> Result<(), AppError> {
 	Ok(())
 }
 
+/// destination 文字列から、最初のプレースホルダー（`{`）より前の静的部分を取り出し、
+/// さらに最後の `/` または `\` までの部分（=ディレクトリのルート）を返す。
+/// プレースホルダーが含まれない場合は文字列全体をそのまま返す。
+///
+/// 例:
+///   "C:/data/backup/{Date}/sub" → "C:/data/backup/"
+///   "C:/data/backup/{Date}"     → "C:/data/backup/"
+///   "C:/data/backup"            → "C:/data/backup"
+///   "{Date}"                    → "" (空文字列 = 不正扱い)
+fn static_root_of_destination(dest: &str) -> &str {
+	let static_part = match dest.find('{') {
+		Some(idx) => {
+			// "{{" は次段で expand_placeholders がリテラル '{' に変換するので静的扱いできるが、
+			// シンプルにするため最初の '{' で切る。
+			let last_sep = dest[..idx].rfind(['/', '\\']);
+			match last_sep {
+				Some(sep_idx) => &dest[..=sep_idx],
+				None => "",
+			}
+		}
+		None => dest,
+	};
+	static_part
+}
+
 fn validate_action(action: &ActionConfig, rule_name: &str) -> Result<(), AppError> {
 	match action.type_ {
 		ActionType::Copy | ActionType::Move => {
@@ -274,10 +299,17 @@ fn validate_action(action: &ActionConfig, rule_name: &str) -> Result<(), AppErro
 				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Copy / Move のとき、verify_integrity(コピー後にファイルの完全性を検証するか) を定義してください", rule_name)));
 			}
 			if let Some(dest) = &action.destination {
-				if !Path::new(dest).is_dir(){
-					return Err(AppError::Validation(format!("監視ルール名 {} のアクションの destination(コピー先/移動先) が存在しません", rule_name)));
+				// destination にプレースホルダーが含まれる場合は、展開前の静的ルート部分
+				// （最初の '{' より前）だけ存在チェックする。プレースホルダー以降の中間
+				// ディレクトリは実行時に自動作成される（設計書 §10.1）。
+				let static_root = static_root_of_destination(dest);
+				if !Path::new(static_root).is_dir() {
+					return Err(AppError::Validation(format!(
+						"監視ルール名 {} のアクションの destination(コピー先/移動先) のルート '{}' が存在しません",
+						rule_name, static_root
+					)));
 				}
-			} 
+			}
 		}
 
 		ActionType::Command => {
@@ -1007,6 +1039,65 @@ mod tests {
 			args: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
+	}
+
+	#[test]
+	fn test_validate_action_copy_destination_with_placeholder_ok() {
+		// destination 中の {Date} 以降はランタイム展開されるため、ルートだけ実在すれば OK
+		let dest_root = tempdir().unwrap();
+		let dest_template = format!("{}/{{Date}}/sub", sanitize_path(dest_root.path()));
+		let action = ActionConfig {
+			type_: ActionType::Copy,
+			destination: Some(dest_template),
+			overwrite: Some(true),
+			verify_integrity: Some(false),
+			preserve_structure: Some(false),
+			working_dir: None,
+			shell: None,
+			command: None,
+			program: None,
+			args: None,
+		};
+		assert!(validate_action(&action, "test").is_ok());
+	}
+
+	#[test]
+	fn test_validate_action_copy_destination_with_placeholder_root_missing() {
+		// プレースホルダー前のルートが存在しなければエラー
+		let action = ActionConfig {
+			type_: ActionType::Copy,
+			destination: Some("C:/nonexistent_root_zzz_99999/{Date}".to_string()),
+			overwrite: Some(true),
+			verify_integrity: Some(false),
+			preserve_structure: Some(false),
+			working_dir: None,
+			shell: None,
+			command: None,
+			program: None,
+			args: None,
+		};
+		assert!(validate_action(&action, "test").is_err());
+	}
+
+	#[test]
+	fn test_static_root_of_destination_no_placeholder() {
+		assert_eq!(static_root_of_destination("C:/data/backup"), "C:/data/backup");
+	}
+
+	#[test]
+	fn test_static_root_of_destination_with_placeholder() {
+		assert_eq!(static_root_of_destination("C:/data/backup/{Date}"), "C:/data/backup/");
+		assert_eq!(static_root_of_destination("C:/data/backup/{Date}/sub"), "C:/data/backup/");
+	}
+
+	#[test]
+	fn test_static_root_of_destination_backslash_separator() {
+		assert_eq!(static_root_of_destination(r"C:\data\backup\{Date}"), r"C:\data\backup\");
+	}
+
+	#[test]
+	fn test_static_root_of_destination_placeholder_at_start() {
+		assert_eq!(static_root_of_destination("{Date}/sub"), "");
 	}
 
 	#[test]
