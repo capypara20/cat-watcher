@@ -76,6 +76,13 @@ fn evaluate_rule(path: &Path, detected_events: &HashSet<Event>, rule: &CompiledR
     if !matches_target(path, &rule.target) { return false; }
     if !matches_hidden(path, rule.include_hidden) { return false; }
 
+    let watch_path = Path::new(&rule.watch_path);
+    if rule.recursive {
+        if !path.starts_with(watch_path) { return false; }
+    } else {
+        if path.parent() != Some(watch_path) { return false; }
+    }
+
     let file_name = match path.file_name().and_then(|n| n.to_str()) {
 		Some(name) => name,
 		None => return false, // ファイル名が UTF-8 でない場合はルール不適用
