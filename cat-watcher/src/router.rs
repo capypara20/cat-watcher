@@ -218,3 +218,113 @@ pub async fn run_router(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use tempfile::TempDir;
+
+    fn make_rule(watch_path: &str, recursive: bool, patterns: Option<Vec<&str>>) -> CompiledRule {
+        let glob_set = patterns.map(|pats| {
+            let mut builder = GlobSetBuilder::new();
+            for p in pats {
+                builder.add(Glob::new(p).unwrap());
+            }
+            builder.build().unwrap()
+        });
+        CompiledRule {
+            name: format!("rule-{}", watch_path),
+            enabled: true,
+            watch_path: watch_path.to_string(),
+            recursive,
+            target: WatchTarget::Both,
+            include_hidden: false,
+            events: vec![Event::Create],
+            glob_set,
+            exclude_glob_set: None,
+            regexes: None,
+            actions: vec![],
+        }
+    }
+
+    fn create_events(e: Event) -> HashSet<Event> {
+        let mut s = HashSet::new();
+        s.insert(e);
+        s
+    }
+
+    // 2つの監視ディレクトリを用意し、片方で検知したファイルが
+    // もう片方のルールに誤マッチしないことを確認する（バグ再現テスト）
+    #[test]
+    fn test_no_cross_directory_match() {
+        let dir_a = TempDir::new().unwrap();
+        let dir_b = TempDir::new().unwrap();
+
+        let rule_a = make_rule(dir_a.path().to_str().unwrap(), false, Some(vec!["*.csv"]));
+        let rule_b = make_rule(dir_b.path().to_str().unwrap(), false, Some(vec!["*.csv"]));
+
+        let file_in_a = dir_a.path().join("data.csv");
+        std::fs::write(&file_in_a, "").unwrap();
+        let events = create_events(Event::Create);
+
+        assert!(evaluate_rule(&file_in_a, &events, &rule_a), "dir_a のルールはマッチすべき");
+        assert!(!evaluate_rule(&file_in_a, &events, &rule_b), "dir_b のルールはマッチしてはいけない");
+    }
+
+    // recursive=false でサブディレクトリのファイルが除外されることを確認
+    #[test]
+    fn test_non_recursive_excludes_subdir() {
+        let dir = TempDir::new().unwrap();
+        let subdir = dir.path().join("sub");
+        std::fs::create_dir(&subdir).unwrap();
+        let file_in_sub = subdir.join("data.csv");
+        std::fs::write(&file_in_sub, "").unwrap();
+
+        let rule = make_rule(dir.path().to_str().unwrap(), false, Some(vec!["*.csv"]));
+        let events = create_events(Event::Create);
+
+        assert!(!evaluate_rule(&file_in_sub, &events, &rule), "サブディレクトリのファイルはマッチしてはいけない");
+    }
+
+    // recursive=true ではサブディレクトリのファイルもマッチすることを確認
+    #[test]
+    fn test_recursive_includes_subdir() {
+        let dir = TempDir::new().unwrap();
+        let subdir = dir.path().join("sub");
+        std::fs::create_dir(&subdir).unwrap();
+        let file_in_sub = subdir.join("data.csv");
+        std::fs::write(&file_in_sub, "").unwrap();
+
+        let rule = make_rule(dir.path().to_str().unwrap(), true, Some(vec!["*.csv"]));
+        let events = create_events(Event::Create);
+
+        assert!(evaluate_rule(&file_in_sub, &events, &rule), "recursive=true ならサブディレクトリもマッチすべき");
+    }
+
+    // 直下のファイルは recursive=false でもマッチすることを確認
+    #[test]
+    fn test_non_recursive_matches_direct_child() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("data.csv");
+        std::fs::write(&file, "").unwrap();
+
+        let rule = make_rule(dir.path().to_str().unwrap(), false, Some(vec!["*.csv"]));
+        let events = create_events(Event::Create);
+
+        assert!(evaluate_rule(&file, &events, &rule));
+    }
+
+    // パターンに合わないファイルは除外されることを確認
+    #[test]
+    fn test_pattern_mismatch_excluded() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("image.png");
+        std::fs::write(&file, "").unwrap();
+
+        let rule = make_rule(dir.path().to_str().unwrap(), false, Some(vec!["*.csv"]));
+        let events = create_events(Event::Create);
+
+        assert!(!evaluate_rule(&file, &events, &rule));
+    }
+}
