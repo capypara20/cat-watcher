@@ -79,12 +79,12 @@ async fn move_one_file(
     // まず rename を試みる（同一ボリューム）
     match tokio::fs::rename(src, dest).await {
         Ok(()) => {
-            log.success(format!("移動完了 (rename): {} -> {}", src.display(), dest.display()));
+            log.success(format!("移動完了 (rename): {} → {}", src.display(), dest.display()));
             return Ok(Some(dest.to_path_buf()));
         }
         Err(e) if is_cross_device(&e) => {
             log.info(format!(
-                "異ボリューム検出: copy フォールバックで移動します {} -> {}",
+                "異ボリューム検出: copy フォールバックで移動します {} → {}",
                 src.display(),
                 dest.display()
             ));
@@ -104,7 +104,7 @@ async fn move_one_file(
 
     for attempt in 1..=max_attempts {
         match try_copy_once(src, dest, verify_integrity).await {
-            Ok(()) => {
+            Ok(maybe_hash) => {
                 tokio::fs::remove_file(src).await.map_err(|e| {
                     AppError::Action(format!(
                         "move: 元ファイルの削除に失敗 ({}): {}",
@@ -112,10 +112,14 @@ async fn move_one_file(
                         e
                     ))
                 })?;
+                let hash_suffix = maybe_hash
+                    .map(|h| format!("  [BLAKE3: {h}]"))
+                    .unwrap_or_default();
                 log.success(format!(
-                    "移動完了 (copy+delete): {} -> {}",
+                    "移動完了 (copy+delete): {} → {}{}",
                     src.display(),
-                    dest.display()
+                    dest.display(),
+                    hash_suffix,
                 ));
                 return Ok(Some(dest.to_path_buf()));
             }
@@ -123,13 +127,13 @@ async fn move_one_file(
                 let _ = tokio::fs::remove_file(dest).await;
                 if attempt < max_attempts {
                     log.warn(format!(
-                        "move 失敗 ({}回目/{}回): {} -> {}: {} (再試行)",
+                        "move 失敗 ({}回目/{}回): {} → {}: {} (再試行)",
                         attempt, max_attempts, src.display(), dest.display(), e
                     ));
                     tokio::time::sleep(interval).await;
                 } else {
                     log.error(format!(
-                        "move 最終失敗 ({}回試行): {} -> {}: {}",
+                        "move 最終失敗 ({}回試行): {} → {}: {}",
                         max_attempts, src.display(), dest.display(), e
                     ));
                     return Err(e);

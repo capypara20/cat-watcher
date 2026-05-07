@@ -80,21 +80,24 @@ async fn copy_one_file(
 
     for attempt in 1..=max_attempts {
         match try_copy_once(src, dest, verify_integrity).await {
-            Ok(()) => {
-                log.success(format!("コピー完了: {} -> {}", src.display(), dest.display()));
+            Ok(maybe_hash) => {
+                let hash_suffix = maybe_hash
+                    .map(|h| format!("  [BLAKE3: {h}]"))
+                    .unwrap_or_default();
+                log.success(format!("コピー完了: {} → {}{}", src.display(), dest.display(), hash_suffix));
                 return Ok(Some(dest.to_path_buf()));
             }
             Err(e) => {
                 let _ = tokio::fs::remove_file(dest).await;
                 if attempt < max_attempts {
                     log.warn(format!(
-                        "copy 失敗 ({}回目/{}回): {} -> {}: {} (再試行)",
+                        "copy 失敗 ({}回目/{}回): {} → {}: {} (再試行)",
                         attempt, max_attempts, src.display(), dest.display(), e
                     ));
                     tokio::time::sleep(interval).await;
                 } else {
                     log.error(format!(
-                        "copy 最終失敗 ({}回試行): {} -> {}: {}",
+                        "copy 最終失敗 ({}回試行): {} → {}: {}",
                         max_attempts, src.display(), dest.display(), e
                     ));
                     return Err(e);

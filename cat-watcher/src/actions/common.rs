@@ -20,8 +20,9 @@ pub async fn hash_file_blake3(path: &Path) -> Result<blake3::Hash, AppError> {
 }
 
 /// 1 回分のファイルコピー試行（`tokio::fs::copy` + BLAKE3 整合性検証）。
+/// verify_integrity=true のとき検証済みハッシュを返す。
 /// 失敗時は宛先の削除を行わない。呼び出し側が責任を持つこと。
-pub async fn try_copy_once(src: &Path, dest: &Path, verify_integrity: bool) -> Result<(), AppError> {
+pub async fn try_copy_once(src: &Path, dest: &Path, verify_integrity: bool) -> Result<Option<blake3::Hash>, AppError> {
     tokio::fs::copy(src, dest)
         .await
         .map_err(|e| AppError::Action(format!("ファイルのコピーに失敗: {}", e)))?;
@@ -36,8 +37,10 @@ pub async fn try_copy_once(src: &Path, dest: &Path, verify_integrity: bool) -> R
                 dest.display()
             )));
         }
+        Ok(Some(src_hash))
+    } else {
+        Ok(None)
     }
-    Ok(())
 }
 
 /// 通常ファイルの宛先パスを算出する。
