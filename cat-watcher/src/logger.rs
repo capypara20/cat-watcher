@@ -118,9 +118,10 @@ async fn open_log_file(path: &PathBuf) -> Option<tokio::fs::File> {
     match OpenOptions::new().create(true).append(true).open(path).await {
         Ok(f) => Some(f),
         Err(e) => {
+            let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
             eprintln!(
                 "{}",
-                format!("[ERROR] ログファイルオープン失敗 ({}): {}", path.display(), e)
+                format!("[{ts}] [ERROR] ログファイルオープン失敗 ({}): {}", path.display(), e)
                     .red()
                     .bold()
             );
@@ -262,7 +263,8 @@ async fn writer_task(
 async fn write_file(file: &mut Option<tokio::fs::File>, line: &str) {
     if let Some(f) = file {
         if let Err(e) = f.write_all(line.as_bytes()).await {
-            eprintln!("{}", format!("[ERROR] ログ書き込み失敗: {e}").red().bold());
+            let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
+            eprintln!("{}", format!("[{ts}] [ERROR] ログ書き込み失敗: {e}").red().bold());
         }
     }
 }

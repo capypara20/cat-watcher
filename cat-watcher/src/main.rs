@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use chrono::Local;
 use clap::Parser;
 use colored::Colorize;
 
@@ -50,7 +51,8 @@ async fn main() -> Result<(), AppError> {
     match result {
         Ok(_) => std::process::exit(0),
         Err(e) => {
-            eprintln!("実行エラー: {}", e);
+            let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
+            eprintln!("{}", format!("[{ts}] [ERROR] 実行エラー: {e}").red().bold());
             std::process::exit(1);
         }
     };
@@ -71,7 +73,8 @@ async fn run(cli: &Cli) -> Result<(), AppError> {
     config::validate_rules_config(&rules_conf)?;
 
     if cli.validate {
-        println!("バリデーション処理成功");
+        let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
+        println!("{}", format!("[{ts}] [INFO]    バリデーション処理成功").cyan());
         return Ok(());
     }
 
