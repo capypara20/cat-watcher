@@ -8,20 +8,20 @@ on:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
+    name: テスト (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
 
     steps:
-      - name: Checkout
+      - name: チェックアウト
         uses: actions/checkout@v4
 
-      - name: Setup Rust
+      - name: Rust セットアップ
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry
+      - name: cargo キャッシュ
         uses: actions/cache@v4
         with:
           path: |
@@ -32,5 +32,5 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run tests
+      - name: テスト実行
         run: cargo test --manifest-path cat-watcher/Cargo.toml

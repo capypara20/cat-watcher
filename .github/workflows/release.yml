@@ -1,4 +1,4 @@
-name: Release
+name: リリース
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   tag:
-    name: Create Tag
+    name: タグ作成
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -16,16 +16,16 @@ jobs:
       created: ${{ steps.tag.outputs.created }}
 
     steps:
-      - name: Checkout
+      - name: チェックアウト
         uses: actions/checkout@v4
 
-      - name: Read version from Cargo.toml
+      - name: Cargo.toml からバージョン読み取り
         id: version
         run: |
           VERSION=$(grep '^version' cat-watcher/Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Create tag if not exists
+      - name: タグが未作成なら作成
         id: tag
         uses: actions/github-script@v7
         with:
@@ -37,7 +37,7 @@ jobs:
                 repo: context.repo.repo,
                 ref: `tags/${tag}`,
               });
-              console.log(`Tag ${tag} already exists, skipping release.`);
+              console.log(`タグ ${tag} は既に存在するためスキップします。`);
               core.setOutput('tag', tag);
               core.setOutput('created', 'false');
             } catch (e) {
@@ -48,13 +48,13 @@ jobs:
                 ref: `refs/tags/${tag}`,
                 sha: context.sha,
               });
-              console.log(`Created tag ${tag}`);
+              console.log(`タグ ${tag} を作成しました。`);
               core.setOutput('tag', tag);
               core.setOutput('created', 'true');
             }
 
   build:
-    name: Build (${{ matrix.name }})
+    name: ビルド (${{ matrix.name }})
     needs: tag
     if: needs.tag.outputs.created == 'true'
     runs-on: ${{ matrix.os }}
@@ -74,15 +74,15 @@ jobs:
             artifact_suffix: linux-x86_64
 
     steps:
-      - name: Checkout
+      - name: チェックアウト
         uses: actions/checkout@v4
 
-      - name: Setup Rust
+      - name: Rust セットアップ
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache cargo registry
+      - name: cargo キャッシュ
         uses: actions/cache@v4
         with:
           path: |
@@ -93,10 +93,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build release binary
+      - name: リリースバイナリのビルド
         run: cargo build --release --target ${{ matrix.target }} --manifest-path cat-watcher/Cargo.toml
 
-      - name: Upload artifact
+      - name: アーティファクトのアップロード
         uses: actions/upload-artifact@v4
         with:
           name: cat-watcher-${{ matrix.artifact_suffix }}
@@ -104,7 +104,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Create Release
+    name: GitHub リリース作成
     needs: [tag, build]
     if: needs.tag.outputs.created == 'true'
     runs-on: ubuntu-latest
@@ -112,19 +112,19 @@ jobs:
       contents: write
 
     steps:
-      - name: Download Windows artifact
+      - name: Windows アーティファクトのダウンロード
         uses: actions/download-artifact@v4
         with:
           name: cat-watcher-windows-x86_64
           path: dist/windows
 
-      - name: Download Linux artifact
+      - name: Linux アーティファクトのダウンロード
         uses: actions/download-artifact@v4
         with:
           name: cat-watcher-linux-x86_64
           path: dist/linux
 
-      - name: Create GitHub Release
+      - name: GitHub リリースの作成
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.tag.outputs.tag }}
