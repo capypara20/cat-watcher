@@ -1,13 +1,17 @@
+use std::sync::Arc;
+
+use std::process::Stdio;
+
 use crate::config::{ActionConfig, Global};
 use crate::error::AppError;
+use crate::logger::Logger;
 use crate::placeholder::{expand_placeholders, PlaceholderContext};
 
-/// command アクションのエントリポイント。
-/// シェル経由でコマンドを fire-and-forget で起動する。
 pub async fn execute(
     action: &ActionConfig,
     ctx: &PlaceholderContext,
     global: &Global,
+    log: Arc<Logger>,
 ) -> Result<(), AppError> {
     let raw_command = action
         .command
@@ -26,11 +30,12 @@ pub async fn execute(
         .filter(|s| !s.is_empty());
 
     if global.dry_run {
-        println!("[INFO] (dry_run) command: shell={} cmd={}", shell, expanded);
+        log.dry_run(format!("command: shell={shell} cmd={expanded}"));
         return Ok(());
     }
 
     let mut cmd = build_shell_command(shell, &expanded)?;
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
 
     if let Some(dir) = working_dir {
         cmd.current_dir(dir);
@@ -38,12 +43,11 @@ pub async fn execute(
 
     cmd.spawn().map_err(|e| {
         AppError::Action(format!(
-            "command: プロセス起動失敗 (shell={} cmd={}): {}",
-            shell, expanded, e
+            "command: プロセス起動失敗 (shell={shell} cmd={expanded}): {e}"
         ))
     })?;
 
-    println!("[INFO] command 起動: shell={} cmd={}", shell, expanded);
+    log.info(format!("コマンド起動: shell={shell} cmd={expanded}"));
     Ok(())
 }
 
@@ -68,8 +72,7 @@ fn build_shell_command(
             Ok(c)
         }
         other => Err(AppError::Action(format!(
-            "command: 不明なシェル '{}'。cmd / powershell / pwsh のいずれかを指定してください",
-            other
+            "command: 不明なシェル '{other}'。cmd / powershell / pwsh のいずれかを指定してください"
         ))),
     }
 }
@@ -81,9 +84,11 @@ mod tests {
     use tempfile::tempdir;
 
     fn make_global(dry_run: bool) -> Global {
+        let dir = tempdir().unwrap();
         Global {
             log_level: LogLevel::Info,
-            log_file: "test.log".to_string(),
+            log_dir: dir.path().to_str().unwrap().to_string(),
+            log_file_name: "test.log".to_string(),
             log_rotation: LogRotation::Never,
             retry_count: 0,
             retry_interval_ms: 0,
@@ -110,6 +115,23 @@ mod tests {
         PlaceholderContext::new(src, watch, "")
     }
 
+    fn make_logger() -> Arc<Logger> {
+        let dir = tempdir().unwrap();
+        let global = Global {
+            log_level: LogLevel::Info,
+            log_dir: dir.path().to_str().unwrap().to_string(),
+            log_file_name: "test.log".to_string(),
+            log_rotation: LogRotation::Never,
+            retry_count: 0,
+            retry_interval_ms: 0,
+            dry_run: false,
+        };
+        // tempdir がドロップされる前にパスを保持するために leak
+        std::mem::forget(dir);
+        let (logger, _) = Logger::new(&global).unwrap();
+        Arc::new(logger)
+    }
+
     #[tokio::test]
     async fn dry_run_does_not_spawn() {
         let dir = tempdir().unwrap();
@@ -118,7 +140,7 @@ mod tests {
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("cmd", "echo hello", "");
         let global = make_global(true);
-        assert!(execute(&action, &ctx, &global).await.is_ok());
+        assert!(execute(&action, &ctx, &global, make_logger()).await.is_ok());
     }
 
     #[tokio::test]
@@ -129,11 +151,12 @@ mod tests {
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("bash", "echo hi", "");
         let global = make_global(false);
-        let result = execute(&action, &ctx, &global).await;
+        let result = execute(&action, &ctx, &global, make_logger()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("不明なシェル"));
     }
 
+    #[cfg(target_os = "windows")]
     #[tokio::test]
     async fn cmd_spawns_successfully() {
         let dir = tempdir().unwrap();
@@ -142,9 +165,10 @@ mod tests {
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("cmd", "echo hello", "");
         let global = make_global(false);
-        assert!(execute(&action, &ctx, &global).await.is_ok());
+        assert!(execute(&action, &ctx, &global, make_logger()).await.is_ok());
     }
 
+    #[cfg(target_os = "windows")]
     #[tokio::test]
     async fn placeholder_expands_in_command() {
         let dir = tempdir().unwrap();
@@ -153,9 +177,10 @@ mod tests {
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("cmd", "echo {Name}", "");
         let global = make_global(false);
-        assert!(execute(&action, &ctx, &global).await.is_ok());
+        assert!(execute(&action, &ctx, &global, make_logger()).await.is_ok());
     }
 
+    #[cfg(target_os = "windows")]
     #[tokio::test]
     async fn working_dir_is_set() {
         let dir = tempdir().unwrap();
@@ -164,7 +189,7 @@ mod tests {
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("cmd", "echo hi", dir.path().to_str().unwrap());
         let global = make_global(false);
-        assert!(execute(&action, &ctx, &global).await.is_ok());
+        assert!(execute(&action, &ctx, &global, make_logger()).await.is_ok());
     }
 
     #[test]

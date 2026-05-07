@@ -1,12 +1,17 @@
-use crate::error::AppError;
-use clap::Parser;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use clap::Parser;
+
+use crate::error::AppError;
+
+mod actions;
 mod config;
 mod error;
+mod logger;
 mod placeholder;
-mod watcher;
 mod router;
-mod actions;
+mod watcher;
 
 #[derive(Parser)]
 struct Cli {
@@ -47,6 +52,19 @@ async fn run(cli: &Cli) -> Result<(), AppError> {
         println!("バリデーション処理成功");
         return Ok(());
     }
-	watcher::start_watching(&rules_conf.rules, &global_config.global).await?;
+
+    let (log, log_handle) = logger::Logger::new(&global_config.global)?;
+    let log = Arc::new(log);
+
+    log.info(format!(
+        "cat-watcher 起動  global={} rules={}",
+        cli.global.display(),
+        cli.rules.display()
+    ));
+
+    watcher::start_watching(&rules_conf.rules, &global_config.global, Arc::clone(&log)).await?;
+
+    log.shutdown();
+    let _ = log_handle.await;
     Ok(())
 }
