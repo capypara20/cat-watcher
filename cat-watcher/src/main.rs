@@ -20,8 +20,6 @@ struct Cli {
     #[arg(short, long)]
     rules: PathBuf,
     #[arg(long)]
-    dry_run: bool,
-    #[arg(long)]
     log_level: Option<String>,
     #[arg(long)]
     validate: bool,

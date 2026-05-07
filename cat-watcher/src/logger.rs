@@ -35,8 +35,6 @@ pub enum LogEntry {
     Warn(String),
     /// エラー
     Error(String),
-    /// dry_run 実行時
-    DryRun(String),
     /// チャネルをクローズしてロガーを終了させる
     Shutdown,
 }
@@ -101,10 +99,6 @@ impl Logger {
 
     pub fn error(&self, msg: impl Into<String>) {
         let _ = self.tx.send(LogEntry::Error(msg.into()));
-    }
-
-    pub fn dry_run(&self, msg: impl Into<String>) {
-        let _ = self.tx.send(LogEntry::DryRun(msg.into()));
     }
 
     pub fn shutdown(&self) {
@@ -253,20 +247,6 @@ async fn writer_task(
                     msg
                 );
                 eprintln!("{}", term_line);
-                write_file(&mut file, &file_line).await;
-            }
-
-            LogEntry::DryRun(msg) => {
-                if !level_enabled(&level, &LogLevel::Info) {
-                    continue;
-                }
-                let file_line = format!("[{ts}] [DRY_RUN] {msg}\n");
-                let term_line = format!(
-                    "{} {}",
-                    format!("[{ts}] [DRY_RUN]").magenta().bold(),
-                    msg
-                );
-                println!("{}", term_line);
                 write_file(&mut file, &file_line).await;
             }
 

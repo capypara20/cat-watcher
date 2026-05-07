@@ -23,12 +23,49 @@ pub async fn start_watching(
 
     let mut watch_map: HashMap<PathBuf, RecursiveMode> = HashMap::new();
     for rule in rules {
+        if !rule.enabled {
+            continue;
+        }
+
         let path = PathBuf::from(&rule.watch.path);
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
         let mode = if rule.watch.recursive {
             RecursiveMode::Recursive
         } else {
             RecursiveMode::NonRecursive
         };
+
+        let pattern_str = if let Some(pats) = &rule.watch.patterns {
+            pats.join(", ")
+        } else if let Some(re) = &rule.watch.regex {
+            format!("regex: {re}")
+        } else {
+            "*".to_string()
+        };
+
+        let events_str = rule
+            .watch
+            .events
+            .iter()
+            .map(|e| match e {
+                crate::config::Event::Create => "作成",
+                crate::config::Event::Modify => "変更",
+                crate::config::Event::Delete => "削除",
+                crate::config::Event::Rename => "リネーム",
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let recursive_str = if rule.watch.recursive { "あり" } else { "なし" };
+
+        log.info(format!(
+            "監視ルール [{}]  パス={}  パターン={}  イベント={}  サブフォルダ={}",
+            rule.name,
+            canonical.display(),
+            pattern_str,
+            events_str,
+            recursive_str,
+        ));
 
         watch_map
             .entry(path)
@@ -44,7 +81,6 @@ pub async fn start_watching(
         watcher.watch(path, *mode).map_err(|e| {
             AppError::Watch(format!("watcher 監視登録失敗 ({}): {}", path.display(), e))
         })?;
-        log.info(format!("監視開始: {} ({:?})", path.display(), mode));
     }
 
     let compiled_rules = crate::router::compile_rules(rules)?;

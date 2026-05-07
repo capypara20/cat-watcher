@@ -15,7 +15,7 @@ use super::common::{
 /// move アクションのエントリポイント。
 /// 戻り値:
 ///   - Ok(Some(dest_path)) ... 移動完了。{Destination} 更新用
-///   - Ok(None)            ... スキップ (overwrite=false で既存) または dry_run
+///   - Ok(None)            ... スキップ (overwrite=false で既存)
 ///   - Err(_)              ... 全リトライ失敗
 pub async fn execute(
     action: &ActionConfig,
@@ -63,11 +63,6 @@ async fn move_one_file(
             "move スキップ (overwrite=false で既存): {}",
             dest.display()
         ));
-        return Ok(None);
-    }
-
-    if global.dry_run {
-        log.dry_run(format!("move: {} -> {}", src.display(), dest.display()));
         return Ok(None);
     }
 
@@ -168,15 +163,6 @@ async fn move_directory_recursive(
         dest_root.join(folder_name)
     };
 
-    if global.dry_run {
-        log.dry_run(format!(
-            "move directory: {} -> {}",
-            src_dir.display(),
-            folder_dest.display()
-        ));
-        return Ok(None);
-    }
-
     tokio::fs::create_dir_all(&folder_dest).await.map_err(|e| {
         AppError::Action(format!(
             "移動先フォルダ作成失敗 ({}): {}",
@@ -234,7 +220,7 @@ mod tests {
     use std::io::Write;
     use tempfile::tempdir;
 
-    fn make_global(retry_count: u32, dry_run: bool) -> Global {
+    fn make_global(retry_count: u32) -> Global {
         let dir = tempdir().unwrap();
         Global {
             log_level: LogLevel::Info,
@@ -243,7 +229,6 @@ mod tests {
             log_rotation: LogRotation::Never,
             retry_count,
             retry_interval_ms: 10,
-            dry_run,
         }
     }
 
@@ -283,7 +268,6 @@ mod tests {
             log_rotation: LogRotation::Never,
             retry_count: 0,
             retry_interval_ms: 0,
-            dry_run: false,
         };
         std::mem::forget(dir);
         let (logger, _) = Logger::new(&global).unwrap();
@@ -298,7 +282,7 @@ mod tests {
         write_file(&src, b"hello");
 
         let action = make_move_action(dest.path().to_str().unwrap(), false, false, false);
-        let global = make_global(0, false);
+        let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
         let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
@@ -316,7 +300,7 @@ mod tests {
         write_file(&dest.path().join("a.txt"), b"old");
 
         let action = make_move_action(dest.path().to_str().unwrap(), false, false, false);
-        let global = make_global(0, false);
+        let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
         let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
@@ -334,29 +318,12 @@ mod tests {
         write_file(&dest.path().join("a.txt"), b"old");
 
         let action = make_move_action(dest.path().to_str().unwrap(), true, false, false);
-        let global = make_global(0, false);
+        let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
         execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
         assert_eq!(std::fs::read(dest.path().join("a.txt")).unwrap(), b"new");
         assert!(!src.exists());
-    }
-
-    #[tokio::test]
-    async fn dry_run_does_not_move_file() {
-        let watch = tempdir().unwrap();
-        let dest = tempdir().unwrap();
-        let src = watch.path().join("a.txt");
-        write_file(&src, b"hello");
-
-        let action = make_move_action(dest.path().to_str().unwrap(), false, false, false);
-        let global = make_global(0, true);
-        let ctx = PlaceholderContext::new(&src, watch.path(), "");
-
-        let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
-        assert_eq!(result, None);
-        assert!(src.exists(), "dry_run では元ファイルを保持");
-        assert!(!dest.path().join("a.txt").exists());
     }
 
     #[tokio::test]
@@ -367,7 +334,7 @@ mod tests {
         write_file(&src, b"hello");
 
         let action = make_move_action(dest.path().to_str().unwrap(), false, true, false);
-        let global = make_global(0, false);
+        let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
         execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
@@ -384,7 +351,7 @@ mod tests {
         write_file(&src_dir.join("sub/b.txt"), b"b");
 
         let action = make_move_action(dest.path().to_str().unwrap(), false, false, false);
-        let global = make_global(0, false);
+        let global = make_global(0);
         let ctx = PlaceholderContext::new(&src_dir, watch.path(), "");
 
         let result = execute(&action, &src_dir, &ctx, &global, make_logger()).await.unwrap();
@@ -402,7 +369,7 @@ mod tests {
         write_file(&src, b"payload for hash");
 
         let action = make_move_action(dest.path().to_str().unwrap(), false, false, true);
-        let global = make_global(0, false);
+        let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
         let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
@@ -422,7 +389,7 @@ mod tests {
             dest_root.path().to_str().unwrap()
         );
         let action = make_move_action(&dest_template, false, false, false);
-        let global = make_global(0, false);
+        let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
         let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
@@ -439,7 +406,7 @@ mod tests {
         let src = watch.path().join("nonexistent.txt");
 
         let action = make_move_action(dest.path().to_str().unwrap(), false, false, false);
-        let global = make_global(0, false);
+        let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
         let result = execute(&action, &src, &ctx, &global, make_logger()).await;
