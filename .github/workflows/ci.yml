@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    name: テスト (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v4
+
+      - name: Rust セットアップ
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo キャッシュ
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: テスト実行
+        run: cargo test --manifest-path cat-watcher/Cargo.toml

@@ -68,7 +68,6 @@ pub struct Global {
     pub log_rotation: LogRotation,
     pub retry_count: u32,
     pub retry_interval_ms: u64,
-    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -514,7 +513,6 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
-				dry_run: false,
 			},
 		};
 		let result = validate_global_config(&config);
@@ -531,7 +529,6 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
-				dry_run: false,
 			},
 		};
 		let result = validate_global_config(&config);
@@ -549,7 +546,6 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
-				dry_run: false,
 			},
 		};
 		let result = validate_global_config(&config);
@@ -567,7 +563,6 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
-				dry_run: false,
 			},
 		};
 		let result = validate_global_config(&config);
@@ -585,7 +580,6 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
-				dry_run: false,
 			},
 		};
 		let result = validate_global_config(&config);

@@ -29,11 +29,6 @@ pub async fn execute(
         .as_deref()
         .filter(|s| !s.is_empty());
 
-    if global.dry_run {
-        log.dry_run(format!("command: shell={shell} cmd={expanded}"));
-        return Ok(());
-    }
-
     let mut cmd = build_shell_command(shell, &expanded)?;
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
 
@@ -83,7 +78,7 @@ mod tests {
     use crate::config::{ActionType, Global, LogLevel, LogRotation};
     use tempfile::tempdir;
 
-    fn make_global(dry_run: bool) -> Global {
+    fn make_global() -> Global {
         let dir = tempdir().unwrap();
         Global {
             log_level: LogLevel::Info,
@@ -92,7 +87,6 @@ mod tests {
             log_rotation: LogRotation::Never,
             retry_count: 0,
             retry_interval_ms: 0,
-            dry_run,
         }
     }
 
@@ -124,23 +118,10 @@ mod tests {
             log_rotation: LogRotation::Never,
             retry_count: 0,
             retry_interval_ms: 0,
-            dry_run: false,
         };
-        // tempdir がドロップされる前にパスを保持するために leak
         std::mem::forget(dir);
         let (logger, _) = Logger::new(&global).unwrap();
         Arc::new(logger)
-    }
-
-    #[tokio::test]
-    async fn dry_run_does_not_spawn() {
-        let dir = tempdir().unwrap();
-        let src = dir.path().join("a.txt");
-        std::fs::write(&src, b"x").unwrap();
-        let ctx = make_ctx(&src, dir.path());
-        let action = make_action("cmd", "echo hello", "");
-        let global = make_global(true);
-        assert!(execute(&action, &ctx, &global, make_logger()).await.is_ok());
     }
 
     #[tokio::test]
@@ -150,7 +131,7 @@ mod tests {
         std::fs::write(&src, b"x").unwrap();
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("bash", "echo hi", "");
-        let global = make_global(false);
+        let global = make_global();
         let result = execute(&action, &ctx, &global, make_logger()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("不明なシェル"));
@@ -164,7 +145,7 @@ mod tests {
         std::fs::write(&src, b"x").unwrap();
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("cmd", "echo hello", "");
-        let global = make_global(false);
+        let global = make_global();
         assert!(execute(&action, &ctx, &global, make_logger()).await.is_ok());
     }
 
@@ -176,7 +157,7 @@ mod tests {
         std::fs::write(&src, b"x").unwrap();
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("cmd", "echo {Name}", "");
-        let global = make_global(false);
+        let global = make_global();
         assert!(execute(&action, &ctx, &global, make_logger()).await.is_ok());
     }
 
@@ -188,7 +169,7 @@ mod tests {
         std::fs::write(&src, b"x").unwrap();
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("cmd", "echo hi", dir.path().to_str().unwrap());
-        let global = make_global(false);
+        let global = make_global();
         assert!(execute(&action, &ctx, &global, make_logger()).await.is_ok());
     }
 
