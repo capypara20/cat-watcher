@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -8,6 +9,7 @@ use notify::EventKind;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use crate::{config::{ActionConfig, Event, Global, Rule, WatchTarget}, error::AppError};
+use crate::logger::Logger;
 
 pub struct CompiledRule{
 	pub name: String,
@@ -152,6 +154,7 @@ pub async fn run_router(
     mut rx: mpsc::Receiver<notify::Result<notify::Event>>,
     compiled_rules: &[CompiledRule],
     global: &Global,
+    log: Arc<Logger>,
 ) -> Result<(), AppError> {
     // デバウンス用マップ: パス → (イベント集合, 最後の受信時刻)
     let mut pending: HashMap<PathBuf, (HashSet<Event>, Instant)> = HashMap::new();
@@ -162,15 +165,13 @@ pub async fn run_router(
             // (A) watcher からイベント受信 → pending に蓄積
             Some(res) = rx.recv() => {
                 if let Ok(event) = res {
-                    // notify::Event は paths を複数持つことがある
-                    // EventKind → config::Event に変換
                     if let Some(config_event) = to_config_event(&event.kind) {
                         for path in &event.paths {
                             let entry = pending
                                 .entry(path.clone())
                                 .or_insert_with(|| (HashSet::new(), Instant::now()));
                             entry.0.insert(config_event.clone());
-                            entry.1 = Instant::now(); // 時刻を更新
+                            entry.1 = Instant::now();
                         }
                     }
                 }
@@ -179,22 +180,23 @@ pub async fn run_router(
             // (B) 100ms タイマー → 500ms 経過分を取り出して評価
             _ = interval.tick() => {
                 let now = Instant::now();
-                // 500ms 経過したエントリを収集
                 let ready: Vec<(PathBuf, HashSet<Event>)> = pending.iter()
                     .filter(|(_, (_, last))| now.duration_since(*last) >= Duration::from_millis(500))
                     .map(|(path, (events, _))| (path.clone(), events.clone()))
                     .collect();
 
-                // 収集したエントリを pending から削除して評価
                 for (path, detected_events) in ready {
                     pending.remove(&path);
-                    // 全ルールに対してフィルタ評価
                     for rule in compiled_rules {
                         if !evaluate_rule(&path, &detected_events, rule) {
                             continue;
                         }
-                        println!("マッチ: ルール={}, パス={}, イベント={:?}",
-                            rule.name, path.display(), detected_events);
+
+                        log.log_match(
+                            &rule.name,
+                            path.display().to_string(),
+                            detected_events.clone(),
+                        );
 
                         let watch_path = PathBuf::from(&rule.watch_path);
                         if let Err(e) = crate::actions::execute_chain(
@@ -202,16 +204,20 @@ pub async fn run_router(
                             &path,
                             &watch_path,
                             global,
+                            Arc::clone(&log),
                         ).await {
-                            eprintln!("アクションチェーン実行エラー: ルール={}, パス={}, エラー={}",
-                                rule.name, path.display(), e);
+                            log.error(format!(
+                                "アクションチェーン実行エラー: ルール={}, パス={}, エラー={}",
+                                rule.name, path.display(), e
+                            ));
                         }
                     }
                 }
-			}
+            }
+
             // (C) Ctrl+C → 終了
             _ = tokio::signal::ctrl_c() => {
-                println!("終了シグナル受信");
+                log.info("終了シグナル受信");
                 break;
             }
         }

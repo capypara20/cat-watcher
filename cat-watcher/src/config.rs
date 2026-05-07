@@ -63,7 +63,8 @@ pub struct RulesConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Global {
     pub log_level: LogLevel,
-    pub log_file: String,
+    pub log_dir: String,
+    pub log_file_name: String,
     pub log_rotation: LogRotation,
     pub retry_count: u32,
     pub retry_interval_ms: u64,
@@ -128,23 +129,31 @@ pub fn load_rules_config(path: &Path) -> Result<RulesConfig, AppError> {
 }
 
 pub fn validate_global_config(config: &GlobalConfig) -> Result<(), AppError> {
-	// ここでグローバル設定のバリデーションを行う
-	let log_file = &config.global.log_file;
-	if log_file.trim().is_empty() {
-		return Err(AppError::Validation("log_file が空文字列です。ファイル名を含む有効なパスを定義してください".to_string()));
+	let log_dir = &config.global.log_dir;
+	if log_dir.trim().is_empty() {
+		return Err(AppError::Validation("log_dir が空文字列です。ログ出力先ディレクトリを定義してください".to_string()));
 	}
-	let log_path = Path::new(log_file);
-	if log_path.extension().is_none() {
-		return Err(AppError::Validation(format!("log_file にファイル拡張子が指定されていません: {}", log_path.display())));
+	let dir_path = Path::new(log_dir);
+	if !dir_path.exists() {
+		return Err(AppError::Validation(format!("log_dir が存在しません: {}", dir_path.display())));
 	}
-
-	if log_path.is_dir() {
-		return Err(AppError::Validation(format!("log_file にディレクトリが指定されています: {}", log_path.display())));
+	if !dir_path.is_dir() {
+		return Err(AppError::Validation(format!("log_dir にディレクトリ以外のパスが指定されています: {}", dir_path.display())));
 	}
 
-	if let Some(parent) = log_path.parent() {
-		if !parent.exists() {
-			return Err(AppError::Validation(format!("log_file の親ディレクトリが存在しません。{}", parent.display())));
+	let log_file_name = &config.global.log_file_name;
+	if log_file_name.trim().is_empty() {
+		return Err(AppError::Validation("log_file_name が空文字列です。ファイル名を定義してください".to_string()));
+	}
+	// log_file_name に使えるプレースホルダーは {Date} と {DateTime} のみ
+	let valid_placeholders = ["Date", "DateTime"];
+	let re = regex::Regex::new(r"\{([A-Za-z]+)\}").unwrap();
+	for caps in re.captures_iter(log_file_name) {
+		let name = &caps[1];
+		if !valid_placeholders.contains(&name) {
+			return Err(AppError::Validation(format!(
+				"log_file_name に使用できないプレースホルダーがあります: {{{name}}}。使用可能なのは {{Date}} と {{DateTime}} のみです"
+			)));
 		}
 	}
 
@@ -424,28 +433,34 @@ mod tests {
 
 	#[test]
 	fn test_parse_global_config() {
-		let toml_str = r#"
+		let dir = tempdir().unwrap();
+		let dir_path = sanitize_path(dir.path());
+		let toml_str = format!(r#"
 			[global]
 			log_level = "info"
-			log_file = "logs/app.log"
+			log_dir = "{dir_path}"
+			log_file_name = "app_{{Date}}.log"
 			log_rotation = "daily"
 			retry_count = 3
 			retry_interval_ms = 1000
 			dry_run = false
-		"#;
-		let config: GlobalConfig = toml::from_str(toml_str).unwrap();
+		"#);
+		let config: GlobalConfig = toml::from_str(&toml_str).unwrap();
 		assert_eq!(config.global.retry_count, 3);
 		assert_eq!(config.global.retry_interval_ms, 1000);
-		assert_eq!(config.global.log_file, "logs/app.log");
+		assert_eq!(config.global.log_dir, dir_path);
 	}
 
 	#[test]
 	fn test_parse_global_config_all_log_levels() {
+		let dir = tempdir().unwrap();
+		let dir_path = sanitize_path(dir.path());
 		for level in &["trace", "debug", "info", "warn", "error"] {
 			let toml_str = format!(r#"
 				[global]
 				log_level = "{level}"
-				log_file = "logs/app.log"
+				log_dir = "{dir_path}"
+				log_file_name = "app.log"
 				log_rotation = "daily"
 				retry_count = 1
 				retry_interval_ms = 500
@@ -458,16 +473,19 @@ mod tests {
 
 	#[test]
 	fn test_parse_global_config_invalid_log_level() {
-		let toml_str = r#"
+		let dir = tempdir().unwrap();
+		let dir_path = sanitize_path(dir.path());
+		let toml_str = format!(r#"
 			[global]
 			log_level = "verbose"
-			log_file = "logs/app.log"
+			log_dir = "{dir_path}"
+			log_file_name = "app.log"
 			log_rotation = "daily"
 			retry_count = 1
 			retry_interval_ms = 500
 			dry_run = false
-		"#;
-		let result: Result<GlobalConfig, _> = toml::from_str(toml_str);
+		"#);
+		let result: Result<GlobalConfig, _> = toml::from_str(&toml_str);
 		assert!(result.is_err());
 	}
 
@@ -476,7 +494,7 @@ mod tests {
 		let toml_str = r#"
 			[global]
 			log_level = "info"
-			log_file = "logs/app.log"
+			log_dir = "logs"
 		"#;
 		let result: Result<GlobalConfig, _> = toml::from_str(toml_str);
 		assert!(result.is_err());
@@ -487,11 +505,12 @@ mod tests {
 	// =========================================================
 
 	#[test]
-	fn test_validate_global_config_empty_log_file() {
+	fn test_validate_global_config_empty_log_dir() {
 		let config = GlobalConfig {
 			global: Global {
 				log_level: LogLevel::Info,
-				log_file: "   ".to_string(),
+				log_dir: "   ".to_string(),
+				log_file_name: "app.log".to_string(),
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
@@ -503,11 +522,12 @@ mod tests {
 	}
 
 	#[test]
-	fn test_validate_global_config_no_extension() {
+	fn test_validate_global_config_dir_not_exist() {
 		let config = GlobalConfig {
 			global: Global {
 				log_level: LogLevel::Info,
-				log_file: "logs/app".to_string(),
+				log_dir: "nonexistent_dir_xyz_12345".to_string(),
+				log_file_name: "app.log".to_string(),
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
@@ -519,11 +539,31 @@ mod tests {
 	}
 
 	#[test]
-	fn test_validate_global_config_parent_dir_not_exist() {
+	fn test_validate_global_config_empty_file_name() {
+		let dir = tempdir().unwrap();
 		let config = GlobalConfig {
 			global: Global {
 				log_level: LogLevel::Info,
-				log_file: "nonexistent_dir_xyz/app.log".to_string(),
+				log_dir: dir.path().to_str().unwrap().to_string(),
+				log_file_name: "  ".to_string(),
+				log_rotation: LogRotation::Daily,
+				retry_count: 3,
+				retry_interval_ms: 1000,
+				dry_run: false,
+			},
+		};
+		let result = validate_global_config(&config);
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn test_validate_global_config_invalid_placeholder_in_file_name() {
+		let dir = tempdir().unwrap();
+		let config = GlobalConfig {
+			global: Global {
+				log_level: LogLevel::Info,
+				log_dir: dir.path().to_str().unwrap().to_string(),
+				log_file_name: "app_{Name}.log".to_string(),
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
@@ -537,11 +577,11 @@ mod tests {
 	#[test]
 	fn test_validate_global_config_valid() {
 		let dir = tempdir().unwrap();
-		let log_file = dir.path().join("app.log");
 		let config = GlobalConfig {
 			global: Global {
 				log_level: LogLevel::Info,
-				log_file: log_file.to_str().unwrap().to_string(),
+				log_dir: dir.path().to_str().unwrap().to_string(),
+				log_file_name: "app_{Date}.log".to_string(),
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
