@@ -80,8 +80,11 @@ async fn copy_one_file(
 
     for attempt in 1..=max_attempts {
         match try_copy_once(src, dest, verify_integrity).await {
-            Ok(()) => {
-                log.success(format!("コピー完了: {} -> {}", src.display(), dest.display()));
+            Ok(maybe_hash) => {
+                let hash_suffix = maybe_hash
+                    .map(|h| format!("  [BLAKE3: {h}]"))
+                    .unwrap_or_default();
+                log.success(format!("コピー完了: {} -> {}{}", src.display(), dest.display(), hash_suffix));
                 return Ok(Some(dest.to_path_buf()));
             }
             Err(e) => {
