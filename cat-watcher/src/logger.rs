@@ -47,10 +47,15 @@ pub struct Logger {
 
 impl Logger {
     pub fn new(global: &Global) -> Result<(Self, tokio::task::JoinHandle<()>), AppError> {
-        let log_path = resolve_log_path(global)?;
+        #[cfg(windows)]
+        colored::control::set_virtual_terminal(true).ok();
+        colored::control::set_override(true);
+
         let level = global.log_level.clone();
+        let log_dir = global.log_dir.clone();
+        let log_file_name = global.log_file_name.clone();
         let (tx, rx) = mpsc::unbounded_channel();
-        let handle = tokio::spawn(writer_task(rx, log_path, level));
+        let handle = tokio::spawn(writer_task(rx, log_dir, log_file_name, level));
         Ok((Self { tx }, handle))
     }
 
@@ -107,45 +112,56 @@ impl Logger {
     }
 }
 
-/// log_dir + log_file_name（プレースホルダー展開済み）からパスを生成する
-pub fn resolve_log_path(global: &Global) -> Result<PathBuf, AppError> {
+fn build_log_path(log_dir: &str, log_file_name: &str) -> PathBuf {
     let now = Local::now();
-    let file_name = global
-        .log_file_name
+    let file_name = log_file_name
         .replace("{Date}", &now.format("%Y%m%d").to_string())
         .replace("{DateTime}", &now.format("%Y%m%d_%H%M%S").to_string());
-    Ok(PathBuf::from(&global.log_dir).join(file_name))
+    PathBuf::from(log_dir).join(file_name)
 }
 
-async fn writer_task(
-    mut rx: mpsc::UnboundedReceiver<LogEntry>,
-    log_path: PathBuf,
-    level: LogLevel,
-) {
-    let mut file = match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .await
-    {
+async fn open_log_file(path: &PathBuf) -> Option<tokio::fs::File> {
+    match OpenOptions::new().create(true).append(true).open(path).await {
         Ok(f) => Some(f),
         Err(e) => {
             eprintln!(
                 "{}",
-                format!("[ERROR] ログファイルオープン失敗 ({}): {}", log_path.display(), e)
+                format!("[ERROR] ログファイルオープン失敗 ({}): {}", path.display(), e)
                     .red()
                     .bold()
             );
             None
         }
-    };
+    }
+}
+
+async fn writer_task(
+    mut rx: mpsc::UnboundedReceiver<LogEntry>,
+    log_dir: String,
+    log_file_name: String,
+    level: LogLevel,
+) {
+    let mut current_date = Local::now().format("%Y%m%d").to_string();
+    let log_path = build_log_path(&log_dir, &log_file_name);
+    let mut file = open_log_file(&log_path).await;
 
     while let Some(entry) = rx.recv().await {
         if matches!(entry, LogEntry::Shutdown) {
             break;
         }
 
-        let ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let now = Local::now();
+        let today = now.format("%Y%m%d").to_string();
+        if today != current_date {
+            if let Some(mut f) = file.take() {
+                let _ = f.flush().await;
+            }
+            current_date = today;
+            let new_path = build_log_path(&log_dir, &log_file_name);
+            file = open_log_file(&new_path).await;
+        }
+
+        let ts = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
         match &entry {
             LogEntry::Shutdown => break,
