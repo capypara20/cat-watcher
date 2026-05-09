@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::config::{ActionConfig, ActionType, Global};
 use crate::error::AppError;
 use crate::logger::Logger;
-use crate::placeholder::PlaceholderContext;
+use crate::placeholder::{expand_placeholders, PlaceholderContext};
 
 /// 1 つの監視イベントに対して、ルールの actions を順に実行する。
 /// アクション間で PlaceholderContext を保持し、copy/move 完了後に {Destination} を更新する。
@@ -53,6 +53,12 @@ pub async fn execute_chain(
                 let program = action.program.as_deref().unwrap_or("");
                 log.log_action(index, total, "execute", format!("program={program}"));
                 execute::execute(action, &ctx, global, Arc::clone(&log)).await?;
+            }
+            ActionType::Log => {
+                let raw = action.message.as_deref().unwrap_or("");
+                let msg = expand_placeholders(raw, &ctx)?;
+                log.log_action(index, total, "log", "");
+                log.info(msg);
             }
         }
     }

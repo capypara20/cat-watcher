@@ -102,6 +102,7 @@ mod tests {
             working_dir: Some(working_dir.to_string()),
             program: None,
             args: None,
+            message: None,
         }
     }
 

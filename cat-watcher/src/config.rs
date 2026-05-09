@@ -82,6 +82,7 @@ pub enum ActionType {
     Move,
     Command,
     Execute,
+    Log,
 }
 
 impl_case_insensitive_deserialize!(ActionType,
@@ -89,6 +90,7 @@ impl_case_insensitive_deserialize!(ActionType,
     Move    => "move",
     Command => "command",
     Execute => "execute",
+    Log     => "log",
 );
 
 #[derive(Debug, Clone, Deserialize)]
@@ -152,6 +154,9 @@ pub struct ActionConfig {
     // typeがExecuteのとき
     pub program: Option<String>,
     pub args: Option<Vec<String>>,
+
+    // typeがLogのとき
+    pub message: Option<String>,
 }
 
 pub fn load_global_config(path: &Path) -> Result<GlobalConfig, AppError> {
@@ -365,13 +370,21 @@ fn validate_action(action: &ActionConfig, rule_name: &str) -> Result<(), AppErro
 			if action.shell.is_none() {
 				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Command のとき、shell(コマンドを実行するシェル) を定義してください", rule_name)));
 			}
-			
+
 			if action.command.is_none() {
 				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Command のとき、command(実行するコマンド) を定義してください", rule_name)));
 			}
 
 			if action.working_dir.is_none() {
 				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Command のとき、working_dir(コマンド/プログラムを実行するディレクトリ) を定義してください", rule_name)));
+			}
+
+			if let Some(dir) = &action.working_dir {
+				if !dir.is_empty() && !Path::new(dir).is_dir() {
+					return Err(AppError::Validation(format!(
+						"監視ルール名 {} のアクションの working_dir が存在しません: {}", rule_name, dir
+					)));
+				}
 			}
 		}
 		ActionType::Execute => {
@@ -384,6 +397,28 @@ fn validate_action(action: &ActionConfig, rule_name: &str) -> Result<(), AppErro
 			if action.working_dir.is_none() {
 				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Execute のとき、working_dir(コマンド/プログラムを実行するディレクトリ) を定義してください", rule_name)));
 			}
+
+			if let Some(dir) = &action.working_dir {
+				if !dir.is_empty() && !Path::new(dir).is_dir() {
+					return Err(AppError::Validation(format!(
+						"監視ルール名 {} のアクションの working_dir が存在しません: {}", rule_name, dir
+					)));
+				}
+			}
+
+			if let Some(program) = &action.program {
+				let p = Path::new(program);
+				if p.is_absolute() && !p.exists() {
+					return Err(AppError::Validation(format!(
+						"監視ルール名 {} のアクションの program が存在しません: {}", rule_name, program
+					)));
+				}
+			}
+		}
+		ActionType::Log => {
+			if action.message.is_none() {
+				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Log のとき、message(出力するメッセージ) を定義してください", rule_name)));
+			}
 		}
 	}
 	Ok(())
@@ -395,6 +430,7 @@ fn validate_action_placeholders(action: &ActionConfig, rule_name: &str) -> Resul
 		("action.command", &action.command),
 		("action.working_dir", &action.working_dir),
 		("action.program", &action.program),
+		("action.message", &action.message),
 	];
 
 	for (field_name, field_value) in fields {
@@ -1024,6 +1060,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_ok());
 	}
@@ -1041,6 +1078,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1059,6 +1097,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1077,6 +1116,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1095,6 +1135,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1112,6 +1153,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1132,6 +1174,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_ok());
 	}
@@ -1150,6 +1193,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1189,6 +1233,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_ok());
 	}
@@ -1210,6 +1255,7 @@ mod tests {
 			command: Some("echo hello".to_string()),
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_ok());
 	}
@@ -1227,6 +1273,7 @@ mod tests {
 			command: Some("echo hello".to_string()),
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1244,6 +1291,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1261,6 +1309,7 @@ mod tests {
 			command: Some("echo hello".to_string()),
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1282,6 +1331,7 @@ mod tests {
 			command: None,
 			program: Some("notepad.exe".to_string()),
 			args: Some(vec![]),
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_ok());
 	}
@@ -1299,6 +1349,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: Some(vec![]),
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1316,6 +1367,7 @@ mod tests {
 			command: None,
 			program: Some("notepad.exe".to_string()),
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1333,6 +1385,7 @@ mod tests {
 			command: None,
 			program: Some("notepad.exe".to_string()),
 			args: Some(vec!["file.txt".to_string()]),
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
