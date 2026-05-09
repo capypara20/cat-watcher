@@ -1,13 +1,26 @@
 use std::path::Path;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use globset::Glob;
 
 use crate::error::AppError;
 use crate::placeholder::validate_placeholders;
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
+macro_rules! impl_case_insensitive_deserialize {
+    ($type:ident, $($variant:ident => $s:literal),+ $(,)?) => {
+        impl<'de> Deserialize<'de> for $type {
+            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let s = String::deserialize(d)?;
+                match s.to_lowercase().as_str() {
+                    $($s => Ok($type::$variant),)+
+                    _ => Err(serde::de::Error::custom(format!("unknown value: {}", s))),
+                }
+            }
+        }
+    };
+}
+
+#[derive(Debug, Clone)]
 pub enum LogLevel {
     Trace,
     Debug,
@@ -16,24 +29,39 @@ pub enum LogLevel {
     Error,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
+impl_case_insensitive_deserialize!(LogLevel,
+    Trace => "trace",
+    Debug => "debug",
+    Info  => "info",
+    Warn  => "warn",
+    Error => "error",
+);
+
+#[derive(Debug, Clone)]
 pub enum LogRotation {
 	Daily,
 	Never,
 }
 
+impl_case_insensitive_deserialize!(LogRotation,
+    Daily => "daily",
+    Never => "never",
+);
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone)]
 pub enum WatchTarget {
-    File,      //ファイルのみか
-    Directory, //ディレクトリのみか
-    Both,      //両方か
+    File,
+    Directory,
+    Both,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "lowercase")]
+impl_case_insensitive_deserialize!(WatchTarget,
+    File      => "file",
+    Directory => "directory",
+    Both      => "both",
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Event {
     Create,
     Modify,
@@ -41,14 +69,27 @@ pub enum Event {
     Rename,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
+impl_case_insensitive_deserialize!(Event,
+    Create => "create",
+    Modify => "modify",
+    Delete => "delete",
+    Rename => "rename",
+);
+
+#[derive(Debug, Clone)]
 pub enum ActionType {
     Copy,
     Move,
     Command,
     Execute,
 }
+
+impl_case_insensitive_deserialize!(ActionType,
+    Copy    => "copy",
+    Move    => "move",
+    Command => "command",
+    Execute => "execute",
+);
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GlobalConfig {
