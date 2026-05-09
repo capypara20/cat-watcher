@@ -14,7 +14,18 @@ mod error;
 mod logger;
 mod placeholder;
 mod router;
+mod templates;
 mod watcher;
+
+#[derive(clap::ValueEnum, Clone)]
+enum InitType {
+    /// global.toml のテンプレートを出力
+    Global,
+    /// rules.toml のテンプレートを出力
+    Rules,
+    /// rules.csv のテンプレートを出力
+    Csv,
+}
 
 #[derive(Parser)]
 #[command(disable_help_flag = false)]
@@ -31,6 +42,9 @@ struct Cli {
     from_csv: Option<PathBuf>,
     #[arg(long, value_name = "FILE")]
     output: Option<PathBuf>,
+    /// テンプレートファイルを出力する (global / rules / csv)
+    #[arg(long, value_name = "TYPE")]
+    init: Option<InitType>,
 }
 
 #[tokio::main]
@@ -45,6 +59,10 @@ async fn main() -> Result<(), AppError> {
 
     if let Some(ref csv_path) = cli.from_csv {
         return csv_import::run(csv_path, cli.output.as_deref());
+    }
+
+    if let Some(ref init_type) = cli.init {
+        return run_init(init_type, cli.output.as_deref());
     }
 
     let result = run(&cli).await;
@@ -91,6 +109,35 @@ async fn run(cli: &Cli) -> Result<(), AppError> {
 
     log.shutdown();
     let _ = log_handle.await;
+    Ok(())
+}
+
+fn run_init(init_type: &InitType, output: Option<&std::path::Path>) -> Result<(), AppError> {
+    let (content, default_name) = match init_type {
+        InitType::Global => (templates::GLOBAL_TOML, "global.toml"),
+        InitType::Rules  => (templates::RULES_TOML,  "rules.toml"),
+        InitType::Csv    => (templates::RULES_CSV,    "rules.csv"),
+    };
+
+    if let Some(path) = output {
+        std::fs::write(path, content)
+            .map_err(|e| AppError::Config(format!("ファイルの書き込みに失敗: {e}")))?;
+        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        println!("{}", format!("[{ts}] [INFO]    テンプレートを出力しました: {}", path.display()).cyan());
+    } else {
+        let path = std::path::Path::new(default_name);
+        if path.exists() {
+            let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+            eprintln!("{}", format!(
+                "[{ts}] [ERROR]   {default_name} が既に存在します。上書きする場合は --output で明示的にパスを指定してください"
+            ).red().bold());
+            std::process::exit(1);
+        }
+        std::fs::write(path, content)
+            .map_err(|e| AppError::Config(format!("ファイルの書き込みに失敗: {e}")))?;
+        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        println!("{}", format!("[{ts}] [INFO]    テンプレートを出力しました: {default_name}").cyan());
+    }
     Ok(())
 }
 
