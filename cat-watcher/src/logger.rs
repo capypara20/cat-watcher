@@ -7,7 +7,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
-use crate::config::{Global, LogLevel};
+use crate::config::{Global, LogLevel, LogRotation};
 use crate::error::AppError;
 
 const SEPARATOR: &str = "──────────────────────────────────────────────────────────────";
@@ -52,8 +52,9 @@ impl Logger {
         let level = global.log_level.clone();
         let log_dir = global.log_dir.clone();
         let log_file_name = global.log_file_name.clone();
+        let log_rotation = global.log_rotation.clone();
         let (tx, rx) = mpsc::unbounded_channel();
-        let handle = tokio::spawn(writer_task(rx, log_dir, log_file_name, level));
+        let handle = tokio::spawn(writer_task(rx, log_dir, log_file_name, level, log_rotation));
         Ok((Self { tx }, handle))
     }
 
@@ -135,6 +136,7 @@ async fn writer_task(
     log_dir: String,
     log_file_name: String,
     level: LogLevel,
+    log_rotation: LogRotation,
 ) {
     let mut current_date = Local::now().format("%Y%m%d").to_string();
     let log_path = build_log_path(&log_dir, &log_file_name);
@@ -147,7 +149,7 @@ async fn writer_task(
 
         let now = Local::now();
         let today = now.format("%Y%m%d").to_string();
-        if today != current_date {
+        if matches!(log_rotation, LogRotation::Daily) && today != current_date {
             if let Some(mut f) = file.take() {
                 let _ = f.flush().await;
             }
@@ -159,8 +161,6 @@ async fn writer_task(
         let ts = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
         match &entry {
-            LogEntry::Shutdown => break,
-
             LogEntry::Match { rule_name, path, events } => {
                 if !level_enabled(&level, &LogLevel::Info) {
                     continue;
@@ -251,7 +251,7 @@ async fn writer_task(
                 write_file(&mut file, &file_line).await;
             }
 
-            LogEntry::Shutdown => break,
+            LogEntry::Shutdown => unreachable!(),
         }
     }
 

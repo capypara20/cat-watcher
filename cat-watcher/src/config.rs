@@ -284,53 +284,6 @@ pub fn validate_rules_config(config: &RulesConfig) -> Result<(), AppError> {
 	finish_validation(errors)
 }
 
-// 循環参照チェック
-fn check_circular_references(rules: &[Rule]) -> Result<(), AppError> {
-	for rule in rules {
-		let watch = std::fs::canonicalize(&rule.watch.path)
-			.map_err(|e| AppError::Validation(format!("パスの変換に失敗しました: {}", e)))?;
-
-		for action in &rule.actions{
-			let dest_str = match &action.type_ {
-				ActionType::Copy | ActionType::Move => {
-					match &action.destination {
-						Some(d) => d,
-						None => continue,
-					}
-				}
-				// コマンド実行とプロセス実行は対象外
-				_ => continue
-			};
-			
-			let dest = std::fs::canonicalize(dest_str)
-			.map_err(|e| AppError::Validation(format!("なんかのエラー {}", e)))?;
-		
-		
-			// コピー処理か移動処理のときに同じパスを指していないかを確認
-			if watch == dest {
-				return Err(AppError::Validation(
-					format!("循環参照: ルール{} の watch.path と destination が同一です", rule.name)
-				));
-			}
-
-			// コピー先/移動先のパスが監視対象のパスのサブディレクトリでかつ再帰的に監視する設定になっていないか確認
-			if dest.starts_with(&watch) && rule.watch.recursive {
-				return Err(AppError::Validation(
-					format!("循環参照: ルール{} の destination が watch.path のサブディレクトリになっています", rule.name)
-				));
-			 }
-
-			// コピー先/移動先のパスのルートディレクトリを監視対象のパスにしていないか確認
-			 if watch.starts_with(&dest) {
-				 return Err(AppError::Validation(
-					format!("循環参照: ルール{} の watch.path が destination のサブディレクトリになっています", rule.name)
-				));
-			}
-		}
-	}
-	Ok(())
-}
-
 /// destination 文字列から、最初のプレースホルダー（`{`）より前の静的部分を取り出し、
 /// さらに最後の `/` または `\` までの部分（=ディレクトリのルート）を返す。
 /// プレースホルダーが含まれない場合は文字列全体をそのまま返す。
@@ -454,12 +407,14 @@ fn collect_action_placeholder_errors(action: &ActionConfig, rule_name: &str, err
 	}
 }
 
+#[cfg(test)]
 fn validate_action(action: &ActionConfig, rule_name: &str) -> Result<(), AppError> {
 	let mut errors = Vec::new();
 	collect_action_errors(action, rule_name, &mut errors);
 	finish_validation(errors)
 }
 
+#[cfg(test)]
 fn validate_action_placeholders(action: &ActionConfig, rule_name: &str) -> Result<(), AppError> {
 	let mut errors = Vec::new();
 	collect_action_placeholder_errors(action, rule_name, &mut errors);

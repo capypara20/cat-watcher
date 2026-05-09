@@ -10,7 +10,7 @@ use crate::placeholder::{expand_placeholders, PlaceholderContext};
 pub async fn execute(
     action: &ActionConfig,
     ctx: &PlaceholderContext,
-    global: &Global,
+    _global: &Global,
     log: Arc<Logger>,
 ) -> Result<(), AppError> {
     let program = action

@@ -7,12 +7,15 @@
 ## 主な機能
 
 - **リアルタイム監視**: 指定フォルダの create / modify / delete / rename を検知
-- **4 種類のアクション**: copy / move / command（シェル経由）/ execute（プロセス直接起動）
+- **5 種類のアクション**: log / copy / move / command（シェル経由）/ execute（プロセス直接起動）
 - **アクションチェーン**: 1 ルールに複数アクションを順次実行（直前のコピー先を `{Destination}` で参照可能）
-- **プレースホルダ**: 監視ファイルのパス・名前・日時などを宛先や引数に埋め込める
+- **プレースホルダー**: 監視ファイルのパス・名前・日時などを宛先や引数に埋め込める
 - **整合性検証**: BLAKE3 ハッシュでコピー後のファイル一致を確認
 - **リトライ機構**: ロック等で失敗したアクションを自動再試行
-- **ログローテーション**: 日次でログファイルを切り替え
+- **ログローテーション**: 日次でログファイルを切り替え（`log_rotation = "never"` で固定ファイルにも対応）
+- **テンプレート生成**: `--init` で設定ファイルのひな形をすぐに出力できる
+- **全件エラー報告**: 設定ファイルに複数の問題があっても、1 回の起動で全エラーをまとめて表示
+- **大文字小文字不区別**: 設定値は `create` / `Create` / `CREATE` のいずれでも動作
 - **CSV → TOML 変換**: Excel で書いたルールを TOML に変換する `--from-csv` モード
 
 ## インストール
@@ -33,11 +36,18 @@ cargo build --release --manifest-path cat-watcher/Cargo.toml
 ### 基本
 
 ```bash
-# 監視を開始
-cat-watcher --global global.toml --rules rules.toml
+# 設定ファイルのテンプレートを生成（まずここから）
+cat-watcher --init global
+cat-watcher --init rules
+cat-watcher --init csv
 
-# 設定ファイルの妥当性チェックのみ
+# 出力先ファイルを明示する場合
+cat-watcher --init global --output config\global.toml
+cat-watcher --init rules  --output config\rules.toml
+
+# 設定を確認してから監視を開始
 cat-watcher --global global.toml --rules rules.toml --validate
+cat-watcher --global global.toml --rules rules.toml
 
 # CSV をルール TOML に変換
 cat-watcher --from-csv rules.csv --output rules.toml
@@ -51,7 +61,7 @@ cat-watcher --from-csv rules.csv --output rules.toml
 [global]
 log_level         = "info"                    # trace / debug / info / warn / error
 log_dir           = "C:\\logs"
-log_file_name     = "cat-watcher_{Date}.log"  # {Date} or {DateTime} を埋め込み可
+log_file_name     = "cat-watcher_{Date}.log"  # {Date} / {DateTime} を埋め込み可
 log_rotation      = "daily"                   # daily / never
 retry_count       = 3
 retry_interval_ms = 1000
@@ -76,6 +86,10 @@ events           = ["create", "modify"]  # create / modify / delete / rename
 
 # ──────────── アクションチェーン ────────────
 [[rules.actions]]
+type    = "log"
+message = "検知: {BaseName}"
+
+[[rules.actions]]
 type               = "copy"
 destination        = "D:\\backup\\{Date}"
 overwrite          = false
@@ -93,16 +107,17 @@ working_dir = ""
 
 | type | 用途 | 主なオプション |
 |------|------|----------------|
+| `log`     | イベントをログファイルに記録するだけ（コマンド実行なし） | `message` |
 | `copy`    | ファイル / ディレクトリをコピー | `destination`, `overwrite`, `preserve_structure`, `verify_integrity` |
 | `move`    | ファイル / ディレクトリを移動（異ボリュームは copy + delete にフォールバック） | `destination`, `overwrite`, `preserve_structure`, `verify_integrity` |
 | `command` | シェル経由でコマンド実行 | `shell` (`cmd` / `powershell` / `pwsh`), `command`, `working_dir` |
 | `execute` | プログラムを直接起動 | `program`, `args`, `working_dir` |
 
-## プレースホルダ
+## プレースホルダー
 
-ルール内の `destination` / `command` / `args` などで使えます。
+ルール内の `message` / `destination` / `command` / `args` などで使えます。
 
-| プレースホルダ | 内容 | 例 |
+| プレースホルダー | 内容 | 例 |
 |----------------|------|----|
 | `{FullName}`      | ファイルのフルパス | `C:\data\report.csv` |
 | `{Name}`          | ファイル名（拡張子なし） | `report` |
@@ -116,6 +131,17 @@ working_dir = ""
 | `{DateTime}`      | 日時 | `20240302_103020` |
 | `{Destination}`   | 直前のアクションの出力先（チェーン用） | コピー後のフルパス |
 
+## バリデーション
+
+`--validate` フラグを付けると、設定ファイルの妥当性チェックのみ実行して終了します。複数の問題があるときはすべて一覧で表示されます。
+
+```
+バリデーションエラーが 3 件見つかりました:
+  [1] log_dir が存在しません: C:\logs\app
+  [2] 監視ルール名 csv-backup の watch.path が存在しません: C:\data\incoming
+  [3] 監視ルール名 log-processor のアクションの type が Command のとき、shell を定義してください
+```
+
 ## CSV からの変換
 
 CSV の列順（1 行目はヘッダー、自動でスキップ）：
@@ -124,11 +150,14 @@ CSV の列順（1 行目はヘッダー、自動でスキップ）：
 rule_name, enabled, watch_path, recursive, target, include_hidden,
 patterns, regex, exclude_patterns, events,
 action_type, destination, overwrite, preserve_structure, verify_integrity,
-shell, command, program, args, working_dir
+shell, command, program, args, working_dir, message
 ```
 
 - 同じ `rule_name` の行を複数並べると、1 ルールに複数アクションを定義できます
 - 配列フィールド（`patterns` / `events` / `args` 等）は `|` 区切り（例: `create|modify`）
+- `log` アクションは `action_type = "log"` とし、`message` 列にメッセージを記入します
+
+`--init csv` でヘッダー付きのサンプル CSV を生成できます。
 
 ## ログ
 
@@ -137,8 +166,11 @@ shell, command, program, args, working_dir
 ```
 ──────────────────────────────────────────────────────────────
 [2026-05-07 10:30:20] [MATCH]   ルール=csv-backup | パス=C:\data\report.csv | Create, Modify
-[2026-05-07 10:30:20] [ACTION]  (1/2) copy  C:\data\report.csv → D:\backup\20260507
+[2026-05-07 10:30:20] [ACTION]  (1/3) log
+[2026-05-07 10:30:20] [INFO]    検知: report.csv
+[2026-05-07 10:30:20] [ACTION]  (2/3) copy  C:\data\report.csv → D:\backup\20260507
 [2026-05-07 10:30:20] [SUCCESS] コピー完了: C:\data\report.csv → D:\backup\20260507\report.csv  [BLAKE3: ...]
+[2026-05-07 10:30:20] [ACTION]  (3/3) command  shell=powershell  cmd=Write-Host 'Backed up: ...'
 ```
 
 ## 開発
