@@ -253,6 +253,7 @@ mod tests {
             command: None,
             program: None,
             args: None,
+            message: None,
         }
     }
 

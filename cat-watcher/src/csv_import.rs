@@ -24,6 +24,7 @@ const COL_COMMAND: usize = 16;
 const COL_PROGRAM: usize = 17;
 const COL_ARGS: usize = 18;
 const COL_WORKING_DIR: usize = 19;
+const COL_MESSAGE: usize = 20;
 
 pub fn run(csv_path: &Path, output: Option<&Path>) -> Result<(), AppError> {
     let content = std::fs::read_to_string(csv_path)
@@ -179,9 +180,13 @@ pub fn run(csv_path: &Path, output: Option<&Path>) -> Result<(), AppError> {
                     }
                     toml.push_str(&format!("working_dir = \"{}\"\n", escape_toml_str(&working_dir)));
                 }
+                "log" => {
+                    let message = get(row, COL_MESSAGE);
+                    toml.push_str(&format!("message = \"{}\"\n", escape_toml_str(&message)));
+                }
                 other => {
                     return Err(AppError::Config(format!(
-                        "ルール '{rule_name}' の action_type '{other}' は不明です (copy / move / command / execute)"
+                        "ルール '{rule_name}' の action_type '{other}' は不明です (copy / move / command / execute / log)"
                     )));
                 }
             }

@@ -82,6 +82,7 @@ mod tests {
             working_dir: Some(working_dir.to_string()),
             program: Some(program.to_string()),
             args: Some(args.into_iter().map(|s| s.to_string()).collect()),
+            message: None,
         }
     }
 

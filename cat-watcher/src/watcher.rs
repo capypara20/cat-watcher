@@ -9,6 +9,11 @@ use crate::config::{Global, Rule};
 use crate::error::AppError;
 use crate::logger::Logger;
 
+fn strip_unc_prefix(path: &PathBuf) -> String {
+    let s = path.display().to_string();
+    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+}
+
 pub async fn start_watching(
     rules: &[Rule],
     global: &Global,
@@ -29,6 +34,7 @@ pub async fn start_watching(
 
         let path = PathBuf::from(&rule.watch.path);
         let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let canonical_display = strip_unc_prefix(&canonical);
         let mode = if rule.watch.recursive {
             RecursiveMode::Recursive
         } else {
@@ -61,7 +67,7 @@ pub async fn start_watching(
         log.info(format!(
             "監視ルール [{}]  パス={}  パターン={}  イベント={}  サブフォルダ={}",
             rule.name,
-            canonical.display(),
+            canonical_display,
             pattern_str,
             events_str,
             recursive_str,

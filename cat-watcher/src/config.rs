@@ -1,13 +1,26 @@
 use std::path::Path;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use globset::Glob;
 
 use crate::error::AppError;
 use crate::placeholder::validate_placeholders;
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
+macro_rules! impl_case_insensitive_deserialize {
+    ($type:ident, $($variant:ident => $s:literal),+ $(,)?) => {
+        impl<'de> Deserialize<'de> for $type {
+            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let s = String::deserialize(d)?;
+                match s.to_lowercase().as_str() {
+                    $($s => Ok($type::$variant),)+
+                    _ => Err(serde::de::Error::custom(format!("unknown value: {}", s))),
+                }
+            }
+        }
+    };
+}
+
+#[derive(Debug, Clone)]
 pub enum LogLevel {
     Trace,
     Debug,
@@ -16,24 +29,39 @@ pub enum LogLevel {
     Error,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
+impl_case_insensitive_deserialize!(LogLevel,
+    Trace => "trace",
+    Debug => "debug",
+    Info  => "info",
+    Warn  => "warn",
+    Error => "error",
+);
+
+#[derive(Debug, Clone)]
 pub enum LogRotation {
 	Daily,
 	Never,
 }
 
+impl_case_insensitive_deserialize!(LogRotation,
+    Daily => "daily",
+    Never => "never",
+);
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone)]
 pub enum WatchTarget {
-    File,      //ファイルのみか
-    Directory, //ディレクトリのみか
-    Both,      //両方か
+    File,
+    Directory,
+    Both,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "lowercase")]
+impl_case_insensitive_deserialize!(WatchTarget,
+    File      => "file",
+    Directory => "directory",
+    Both      => "both",
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Event {
     Create,
     Modify,
@@ -41,14 +69,29 @@ pub enum Event {
     Rename,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
+impl_case_insensitive_deserialize!(Event,
+    Create => "create",
+    Modify => "modify",
+    Delete => "delete",
+    Rename => "rename",
+);
+
+#[derive(Debug, Clone)]
 pub enum ActionType {
     Copy,
     Move,
     Command,
     Execute,
+    Log,
 }
+
+impl_case_insensitive_deserialize!(ActionType,
+    Copy    => "copy",
+    Move    => "move",
+    Command => "command",
+    Execute => "execute",
+    Log     => "log",
+);
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GlobalConfig {
@@ -111,6 +154,9 @@ pub struct ActionConfig {
     // typeがExecuteのとき
     pub program: Option<String>,
     pub args: Option<Vec<String>>,
+
+    // typeがLogのとき
+    pub message: Option<String>,
 }
 
 pub fn load_global_config(path: &Path) -> Result<GlobalConfig, AppError> {
@@ -127,94 +173,115 @@ pub fn load_rules_config(path: &Path) -> Result<RulesConfig, AppError> {
 	Ok(config)
 }
 
+fn finish_validation(errors: Vec<String>) -> Result<(), AppError> {
+	if errors.is_empty() {
+		return Ok(());
+	}
+	if errors.len() == 1 {
+		return Err(AppError::Validation(errors.into_iter().next().unwrap()));
+	}
+	let mut msg = format!("バリデーションエラーが {} 件見つかりました:\n", errors.len());
+	for (i, e) in errors.iter().enumerate() {
+		msg.push_str(&format!("  [{}] {}\n", i + 1, e));
+	}
+	Err(AppError::Validation(msg.trim_end().to_string()))
+}
+
 pub fn validate_global_config(config: &GlobalConfig) -> Result<(), AppError> {
+	let mut errors = Vec::new();
+
 	let log_dir = &config.global.log_dir;
 	if log_dir.trim().is_empty() {
-		return Err(AppError::Validation("log_dir が空文字列です。ログ出力先ディレクトリを定義してください".to_string()));
-	}
-	let dir_path = Path::new(log_dir);
-	if !dir_path.exists() {
-		return Err(AppError::Validation(format!("log_dir が存在しません: {}", dir_path.display())));
-	}
-	if !dir_path.is_dir() {
-		return Err(AppError::Validation(format!("log_dir にディレクトリ以外のパスが指定されています: {}", dir_path.display())));
+		errors.push("log_dir が空文字列です。ログ出力先ディレクトリを定義してください".to_string());
+	} else {
+		let dir_path = Path::new(log_dir);
+		if !dir_path.exists() {
+			errors.push(format!("log_dir が存在しません: {}", dir_path.display()));
+		} else if !dir_path.is_dir() {
+			errors.push(format!("log_dir にディレクトリ以外のパスが指定されています: {}", dir_path.display()));
+		}
 	}
 
 	let log_file_name = &config.global.log_file_name;
 	if log_file_name.trim().is_empty() {
-		return Err(AppError::Validation("log_file_name が空文字列です。ファイル名を定義してください".to_string()));
-	}
-	// log_file_name に使えるプレースホルダーは {Date} と {DateTime} のみ
-	let valid_placeholders = ["Date", "DateTime"];
-	let re = regex::Regex::new(r"\{([A-Za-z]+)\}").unwrap();
-	for caps in re.captures_iter(log_file_name) {
-		let name = &caps[1];
-		if !valid_placeholders.contains(&name) {
-			return Err(AppError::Validation(format!(
-				"log_file_name に使用できないプレースホルダーがあります: {{{name}}}。使用可能なのは {{Date}} と {{DateTime}} のみです"
-			)));
+		errors.push("log_file_name が空文字列です。ファイル名を定義してください".to_string());
+	} else {
+		let valid_placeholders = ["Date", "DateTime"];
+		let re = regex::Regex::new(r"\{([A-Za-z]+)\}").unwrap();
+		for caps in re.captures_iter(log_file_name) {
+			let name = &caps[1];
+			if !valid_placeholders.contains(&name) {
+				errors.push(format!(
+					"log_file_name に使用できないプレースホルダーがあります: {{{name}}}。使用可能なのは {{Date}} と {{DateTime}} のみです"
+				));
+			}
 		}
 	}
 
-	Ok(())
+	finish_validation(errors)
 }
 
 pub fn validate_rules_config(config: &RulesConfig) -> Result<(), AppError> {
-	// ここでルール設定のバリデーションを行う
+	let mut errors = Vec::new();
 	let rules = &config.rules;
+
 	if rules.is_empty() {
-		return Err(AppError::Validation("ルールが1つも定義されていません。少なくとも1つのルールを定義してください".to_string()));
+		errors.push("ルールが1つも定義されていません。少なくとも1つのルールを定義してください".to_string());
+		return finish_validation(errors);
 	}
-	rules.iter().enumerate().try_for_each(|(index, rule)| {
+
+	for (index, rule) in rules.iter().enumerate() {
+		let rule_id = if rule.name.trim().is_empty() {
+			format!("{}番目のルール(name未設定)", index + 1)
+		} else {
+			rule.name.clone()
+		};
+
 		if rule.name.trim().is_empty() {
-			return Err(AppError::Validation(format!("{} 番目の name が空文字列です。ルールにわかりやすい名前を定義してください", index)));
+			errors.push(format!("{} 番目の name が空文字列です。ルールにわかりやすい名前を定義してください", index + 1));
 		}
 		if rule.actions.is_empty() {
-			return Err(AppError::Validation(format!("監視ルール名 {} の actions(処理) が1つも定義されていません。少なくとも1つのアクションを定義してください", rule.name)));
+			errors.push(format!("監視ルール名 {} の actions(処理) が1つも定義されていません。少なくとも1つのアクションを定義してください", rule_id));
 		}
 		if rule.watch.events.is_empty() {
-			return Err(AppError::Validation(format!("監視ルール名 {} の watch.events(検知イベント) が1つも定義されていません。少なくとも1つのイベントを定義してください", rule.name)));
+			errors.push(format!("監視ルール名 {} の watch.events(検知イベント) が1つも定義されていません。少なくとも1つのイベントを定義してください", rule_id));
 		}
 		if (rule.watch.patterns.is_some() && rule.watch.regex.is_some()) || (rule.watch.patterns.is_none() && rule.watch.regex.is_none()) {
-			return Err(AppError::Validation(format!("監視ルール名 {} の watch.patterns と watch.regex は片方のみ定義できます。どちらか一方を定義してください", rule.name)));
+			errors.push(format!("監視ルール名 {} の watch.patterns と watch.regex は片方のみ定義できます。どちらか一方を定義してください", rule_id));
 		}
-		
-		for action in &rule.actions{
-			validate_action(action, &rule.name)?;
-			validate_action_placeholders(action, &rule.name)?;
+
+		for action in &rule.actions {
+			collect_action_errors(action, &rule_id, &mut errors);
+			collect_action_placeholder_errors(action, &rule_id, &mut errors);
 		}
 
 		let watch_path = Path::new(&rule.watch.path);
 		if !watch_path.is_dir() {
-			return Err(AppError::Validation(format!("監視ルール名 {} の watch.path が存在しません: {}", rule.name, watch_path.display())));
+			errors.push(format!("監視ルール名 {} の watch.path が存在しません: {}", rule_id, watch_path.display()));
 		}
 
-		// globパターンチェック
-		if let Some(patterns) = &rule.watch.patterns{
+		if let Some(patterns) = &rule.watch.patterns {
 			for pt in patterns {
-				Glob::new(pt).map_err(|e| AppError::Validation(
-					format!("監視ルール名 {} の patterns に無効な glob があります '{}': {}",rule.name, pt, e)
-				))?;
+				if let Err(e) = Glob::new(pt) {
+					errors.push(format!("監視ルール名 {} の patterns に無効な glob があります '{}': {}", rule_id, pt, e));
+				}
 			}
 		}
 
-		// 正規表現チェック
-		if let Some(regex_str) = &rule.watch.regex{
-			Regex::new(regex_str).map_err(|e| AppError::Validation(
-				format!("監視ルール名 {} の regex に無効な正規表現があります '{}': {}", rule.name, regex_str, e)
-			))?;
+		if let Some(regex_str) = &rule.watch.regex {
+			if let Err(e) = Regex::new(regex_str) {
+				errors.push(format!("監視ルール名 {} の regex に無効な正規表現があります '{}': {}", rule_id, regex_str, e));
+			}
 		}
 
-		for glob in &rule.watch.exclude_patterns{
-			Glob::new(glob).map_err(|e| AppError::Validation(
-				format!("監視ルール名 {} の exclude_patterns に無効な glob があります '{}': {}", rule.name, glob, e)
-			))?;
+		for glob in &rule.watch.exclude_patterns {
+			if let Err(e) = Glob::new(glob) {
+				errors.push(format!("監視ルール名 {} の exclude_patterns に無効な glob があります '{}': {}", rule_id, glob, e));
+			}
 		}
+	}
 
-		Ok(())
-	})?;
-
-	Ok(())
+	finish_validation(errors)
 }
 
 // 循環参照チェック
@@ -289,86 +356,114 @@ fn static_root_of_destination(dest: &str) -> &str {
 	static_part
 }
 
-fn validate_action(action: &ActionConfig, rule_name: &str) -> Result<(), AppError> {
+fn collect_action_errors(action: &ActionConfig, rule_name: &str, errors: &mut Vec<String>) {
 	match action.type_ {
 		ActionType::Copy | ActionType::Move => {
 			if action.destination.is_none() {
-				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Copy / Move のとき、destination(コピー先/移動先) を定義してください", rule_name)));
+				errors.push(format!("監視ルール名 {} のアクションの type が Copy / Move のとき、destination(コピー先/移動先) を定義してください", rule_name));
 			}
-
 			if action.overwrite.is_none() {
-				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Copy / Move のとき、overwrite(上書きの有無) を定義してください", rule_name)));
+				errors.push(format!("監視ルール名 {} のアクションの type が Copy / Move のとき、overwrite(上書きの有無) を定義してください", rule_name));
 			}
-
 			if action.preserve_structure.is_none() {
-				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Copy / Move のとき、preserve_structure(ディレクトリ構造を保持するか) を定義してください", rule_name)));
+				errors.push(format!("監視ルール名 {} のアクションの type が Copy / Move のとき、preserve_structure(ディレクトリ構造を保持するか) を定義してください", rule_name));
 			}
 			if action.verify_integrity.is_none() {
-				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Copy / Move のとき、verify_integrity(コピー後にファイルの完全性を検証するか) を定義してください", rule_name)));
+				errors.push(format!("監視ルール名 {} のアクションの type が Copy / Move のとき、verify_integrity(コピー後にファイルの完全性を検証するか) を定義してください", rule_name));
 			}
 			if let Some(dest) = &action.destination {
-				// destination にプレースホルダーが含まれる場合は、展開前の静的ルート部分
-				// （最初の '{' より前）だけ存在チェックする。プレースホルダー以降の中間
-				// ディレクトリは実行時に自動作成される（設計書 §10.1）。
 				let static_root = static_root_of_destination(dest);
 				if !Path::new(static_root).is_dir() {
-					return Err(AppError::Validation(format!(
+					errors.push(format!(
 						"監視ルール名 {} のアクションの destination(コピー先/移動先) のルート '{}' が存在しません",
 						rule_name, static_root
-					)));
+					));
 				}
 			}
 		}
 
 		ActionType::Command => {
 			if action.shell.is_none() {
-				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Command のとき、shell(コマンドを実行するシェル) を定義してください", rule_name)));
+				errors.push(format!("監視ルール名 {} のアクションの type が Command のとき、shell(コマンドを実行するシェル) を定義してください", rule_name));
 			}
-			
 			if action.command.is_none() {
-				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Command のとき、command(実行するコマンド) を定義してください", rule_name)));
+				errors.push(format!("監視ルール名 {} のアクションの type が Command のとき、command(実行するコマンド) を定義してください", rule_name));
 			}
-
 			if action.working_dir.is_none() {
-				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Command のとき、working_dir(コマンド/プログラムを実行するディレクトリ) を定義してください", rule_name)));
+				errors.push(format!("監視ルール名 {} のアクションの type が Command のとき、working_dir(コマンド/プログラムを実行するディレクトリ) を定義してください", rule_name));
+			}
+			if let Some(dir) = &action.working_dir {
+				if !dir.is_empty() && !Path::new(dir).is_dir() {
+					errors.push(format!("監視ルール名 {} のアクションの working_dir が存在しません: {}", rule_name, dir));
+				}
 			}
 		}
+
 		ActionType::Execute => {
 			if action.program.is_none() {
-				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Execute のとき、program(実行するプログラム) を定義してください", rule_name)));
+				errors.push(format!("監視ルール名 {} のアクションの type が Execute のとき、program(実行するプログラム) を定義してください", rule_name));
 			}
 			if action.args.is_none() {
-				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Execute のとき、args(プログラムに渡す引数) を定義してください。引数がない場合は空の配列を指定してください", rule_name)));
+				errors.push(format!("監視ルール名 {} のアクションの type が Execute のとき、args(プログラムに渡す引数) を定義してください。引数がない場合は空の配列を指定してください", rule_name));
 			}
 			if action.working_dir.is_none() {
-				return Err(AppError::Validation(format!("監視ルール名 {} のアクションの type が Execute のとき、working_dir(コマンド/プログラムを実行するディレクトリ) を定義してください", rule_name)));
+				errors.push(format!("監視ルール名 {} のアクションの type が Execute のとき、working_dir(コマンド/プログラムを実行するディレクトリ) を定義してください", rule_name));
+			}
+			if let Some(dir) = &action.working_dir {
+				if !dir.is_empty() && !Path::new(dir).is_dir() {
+					errors.push(format!("監視ルール名 {} のアクションの working_dir が存在しません: {}", rule_name, dir));
+				}
+			}
+			if let Some(program) = &action.program {
+				let p = Path::new(program);
+				if p.is_absolute() && !p.exists() {
+					errors.push(format!("監視ルール名 {} のアクションの program が存在しません: {}", rule_name, program));
+				}
+			}
+		}
+
+		ActionType::Log => {
+			if action.message.is_none() {
+				errors.push(format!("監視ルール名 {} のアクションの type が Log のとき、message(出力するメッセージ) を定義してください", rule_name));
 			}
 		}
 	}
-	Ok(())
 }
 
-fn validate_action_placeholders(action: &ActionConfig, rule_name: &str) -> Result<(), AppError> {
+fn collect_action_placeholder_errors(action: &ActionConfig, rule_name: &str, errors: &mut Vec<String>) {
 	let fields = [
 		("action.destination", &action.destination),
 		("action.command", &action.command),
 		("action.working_dir", &action.working_dir),
 		("action.program", &action.program),
+		("action.message", &action.message),
 	];
-
 	for (field_name, field_value) in fields {
 		if let Some(value) = field_value {
-			validate_placeholders(value, rule_name, field_name)?;
+			if let Err(e) = validate_placeholders(value, rule_name, field_name) {
+				errors.push(e.to_string());
+			}
 		}
 	}
-
 	if let Some(args) = &action.args {
 		for (index, arg) in args.iter().enumerate() {
-			validate_placeholders(arg, rule_name, &format!("action.args[{}]", index))?;
+			if let Err(e) = validate_placeholders(arg, rule_name, &format!("action.args[{}]", index)) {
+				errors.push(e.to_string());
+			}
 		}
 	}
+}
 
-	Ok(())
+fn validate_action(action: &ActionConfig, rule_name: &str) -> Result<(), AppError> {
+	let mut errors = Vec::new();
+	collect_action_errors(action, rule_name, &mut errors);
+	finish_validation(errors)
+}
+
+fn validate_action_placeholders(action: &ActionConfig, rule_name: &str) -> Result<(), AppError> {
+	let mut errors = Vec::new();
+	collect_action_placeholder_errors(action, rule_name, &mut errors);
+	finish_validation(errors)
 }
 
 #[cfg(test)]
@@ -983,6 +1078,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_ok());
 	}
@@ -1000,6 +1096,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1018,6 +1115,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1036,6 +1134,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1054,6 +1153,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1071,6 +1171,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1091,6 +1192,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_ok());
 	}
@@ -1109,6 +1211,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1148,6 +1251,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_ok());
 	}
@@ -1169,6 +1273,7 @@ mod tests {
 			command: Some("echo hello".to_string()),
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_ok());
 	}
@@ -1186,6 +1291,7 @@ mod tests {
 			command: Some("echo hello".to_string()),
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1203,6 +1309,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1220,6 +1327,7 @@ mod tests {
 			command: Some("echo hello".to_string()),
 			program: None,
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1241,6 +1349,7 @@ mod tests {
 			command: None,
 			program: Some("notepad.exe".to_string()),
 			args: Some(vec![]),
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_ok());
 	}
@@ -1258,6 +1367,7 @@ mod tests {
 			command: None,
 			program: None,
 			args: Some(vec![]),
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1275,6 +1385,7 @@ mod tests {
 			command: None,
 			program: Some("notepad.exe".to_string()),
 			args: None,
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
@@ -1292,6 +1403,7 @@ mod tests {
 			command: None,
 			program: Some("notepad.exe".to_string()),
 			args: Some(vec!["file.txt".to_string()]),
+			message: None,
 		};
 		assert!(validate_action(&action, "test").is_err());
 	}
