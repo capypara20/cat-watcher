@@ -1,0 +1,8 @@
+[package]
+name = "raw-events"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+notify = "8.2.0"
+chrono = { version = "0.4", features = ["now"] }

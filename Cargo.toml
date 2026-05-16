@@ -1,5 +1,6 @@
 [workspace]
 members = [
     "cat-watcher",
+    "raw-events",
 ]
 resolver = "3"
