@@ -6,10 +6,31 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use notify::EventKind;
+use notify::event::{CreateKind, RemoveKind};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use crate::{config::{ActionConfig, Event, Global, Rule, WatchTarget}, error::AppError};
 use crate::logger::Logger;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    File,
+    Dir,
+}
+
+/// notify のイベントサブタイプから EntryKind を取得する。
+/// Linux は File/Folder が明確に来る。Windows は Any なので None を返す。
+fn kind_from_notify_event(event: &notify::Event) -> Option<EntryKind> {
+    match &event.kind {
+        EventKind::Create(CreateKind::File) | EventKind::Remove(RemoveKind::File) => {
+            Some(EntryKind::File)
+        }
+        EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) => {
+            Some(EntryKind::Dir)
+        }
+        _ => None,
+    }
+}
 
 pub struct CompiledRule{
 	pub name: String,
@@ -73,9 +94,14 @@ pub fn compile_rules(rules: &[Rule]) -> Result<Vec<CompiledRule>, AppError> {
 	Ok(compiled_rules)
 }
 
-fn evaluate_rule(path: &Path, detected_events: &HashSet<Event>, rule: &CompiledRule) -> bool {
+fn evaluate_rule(
+    path: &Path,
+    detected_events: &HashSet<Event>,
+    kind: Option<EntryKind>,
+    rule: &CompiledRule,
+) -> bool {
 	if !rule.enabled { return false; }
-    if !matches_target(path, &rule.target) { return false; }
+    if !matches_target(path, &rule.target, kind) { return false; }
     if !matches_hidden(path, rule.include_hidden) { return false; }
 
     let watch_path = Path::new(&rule.watch_path);
@@ -97,15 +123,20 @@ fn evaluate_rule(path: &Path, detected_events: &HashSet<Event>, rule: &CompiledR
 }
 
 /// target フィルタ: file/directory/both の判定
-fn matches_target(path: &Path, target: &WatchTarget) -> bool{
-	match target {
-		WatchTarget::Both => true, // ターゲットが両方なら常にマッチ
-		WatchTarget::File => path.is_file(), // ファイルであればマッチ
-		WatchTarget::Directory => path.is_dir(), // ディレクトリであればマッチ
-		// TODO: deleteイベント時はファイルが存在しないため判定不可
-		// 		 notify の EventKindから指定すれば判定可能かも
-		
-	}
+///
+/// kind はイベント受信時点でキャッシュ or notify サブタイプから解決済み。
+/// Delete 後はパスが消えているため is_file()/is_dir() が使えないが、
+/// kind が Some であればキャッシュ由来の情報で正しく判定できる。
+fn matches_target(path: &Path, target: &WatchTarget, kind: Option<EntryKind>) -> bool {
+    match target {
+        WatchTarget::Both => true,
+        WatchTarget::File => kind
+            .map(|k| k == EntryKind::File)
+            .unwrap_or_else(|| path.is_file()),
+        WatchTarget::Directory => kind
+            .map(|k| k == EntryKind::Dir)
+            .unwrap_or_else(|| path.is_dir()),
+    }
 }
 
 /// include_hidden フィルタ（Phase 12 まではスタブ）
@@ -155,9 +186,10 @@ pub async fn run_router(
     compiled_rules: &[CompiledRule],
     global: &Global,
     log: Arc<Logger>,
+    mut path_cache: HashMap<PathBuf, EntryKind>,
 ) -> Result<(), AppError> {
-    // デバウンス用マップ: パス → (イベント集合, 最後の受信時刻)
-    let mut pending: HashMap<PathBuf, (HashSet<Event>, Instant)> = HashMap::new();
+    // デバウンス用マップ: パス → (イベント集合, 最後の受信時刻, EntryKind)
+    let mut pending: HashMap<PathBuf, (HashSet<Event>, Instant, Option<EntryKind>)> = HashMap::new();
     let mut interval = tokio::time::interval(Duration::from_millis(100));
 
     loop {
@@ -165,13 +197,37 @@ pub async fn run_router(
             // (A) watcher からイベント受信 → pending に蓄積
             Some(res) = rx.recv() => {
                 if let Ok(event) = res {
+                    // Create 時はパスがまだ存在するのでキャッシュ更新できる
+                    if matches!(event.kind, EventKind::Create(_)) {
+                        for path in &event.paths {
+                            if path.is_file() {
+                                path_cache.insert(path.clone(), EntryKind::File);
+                            } else if path.is_dir() {
+                                path_cache.insert(path.clone(), EntryKind::Dir);
+                            }
+                        }
+                    }
+
+                    // notify サブタイプ優先、なければキャッシュ参照（Windows 対応）
+                    let notify_kind = kind_from_notify_event(&event);
+
                     if let Some(config_event) = to_config_event(&event.kind) {
                         for path in &event.paths {
+                            let kind = notify_kind.or_else(|| path_cache.get(path).copied());
+
+                            // Remove 時はキャッシュから削除（kind は取得済み）
+                            if matches!(event.kind, EventKind::Remove(_)) {
+                                path_cache.remove(path);
+                            }
+
                             let entry = pending
                                 .entry(path.clone())
-                                .or_insert_with(|| (HashSet::new(), Instant::now()));
+                                .or_insert_with(|| (HashSet::new(), Instant::now(), kind));
                             entry.0.insert(config_event.clone());
                             entry.1 = Instant::now();
+                            if entry.2.is_none() {
+                                entry.2 = kind;
+                            }
                         }
                     }
                 }
@@ -180,15 +236,15 @@ pub async fn run_router(
             // (B) 100ms タイマー → 500ms 経過分を取り出して評価
             _ = interval.tick() => {
                 let now = Instant::now();
-                let ready: Vec<(PathBuf, HashSet<Event>)> = pending.iter()
-                    .filter(|(_, (_, last))| now.duration_since(*last) >= Duration::from_millis(500))
-                    .map(|(path, (events, _))| (path.clone(), events.clone()))
+                let ready: Vec<(PathBuf, HashSet<Event>, Option<EntryKind>)> = pending.iter()
+                    .filter(|(_, (_, last, _))| now.duration_since(*last) >= Duration::from_millis(500))
+                    .map(|(path, (events, _, kind))| (path.clone(), events.clone(), *kind))
                     .collect();
 
-                for (path, detected_events) in ready {
+                for (path, detected_events, kind) in ready {
                     pending.remove(&path);
                     for rule in compiled_rules {
-                        if !evaluate_rule(&path, &detected_events, rule) {
+                        if !evaluate_rule(&path, &detected_events, kind, rule) {
                             continue;
                         }
 
@@ -274,8 +330,8 @@ mod tests {
         std::fs::write(&file_in_a, "").unwrap();
         let events = create_events(Event::Create);
 
-        assert!(evaluate_rule(&file_in_a, &events, &rule_a), "dir_a のルールはマッチすべき");
-        assert!(!evaluate_rule(&file_in_a, &events, &rule_b), "dir_b のルールはマッチしてはいけない");
+        assert!(evaluate_rule(&file_in_a, &events, None, &rule_a), "dir_a のルールはマッチすべき");
+        assert!(!evaluate_rule(&file_in_a, &events, None, &rule_b), "dir_b のルールはマッチしてはいけない");
     }
 
     // recursive=false でサブディレクトリのファイルが除外されることを確認
@@ -290,7 +346,7 @@ mod tests {
         let rule = make_rule(dir.path().to_str().unwrap(), false, Some(vec!["*.csv"]));
         let events = create_events(Event::Create);
 
-        assert!(!evaluate_rule(&file_in_sub, &events, &rule), "サブディレクトリのファイルはマッチしてはいけない");
+        assert!(!evaluate_rule(&file_in_sub, &events, None, &rule), "サブディレクトリのファイルはマッチしてはいけない");
     }
 
     // recursive=true ではサブディレクトリのファイルもマッチすることを確認
@@ -305,7 +361,7 @@ mod tests {
         let rule = make_rule(dir.path().to_str().unwrap(), true, Some(vec!["*.csv"]));
         let events = create_events(Event::Create);
 
-        assert!(evaluate_rule(&file_in_sub, &events, &rule), "recursive=true ならサブディレクトリもマッチすべき");
+        assert!(evaluate_rule(&file_in_sub, &events, None, &rule), "recursive=true ならサブディレクトリもマッチすべき");
     }
 
     // 直下のファイルは recursive=false でもマッチすることを確認
@@ -318,7 +374,7 @@ mod tests {
         let rule = make_rule(dir.path().to_str().unwrap(), false, Some(vec!["*.csv"]));
         let events = create_events(Event::Create);
 
-        assert!(evaluate_rule(&file, &events, &rule));
+        assert!(evaluate_rule(&file, &events, None, &rule));
     }
 
     // パターンに合わないファイルは除外されることを確認
@@ -331,6 +387,6 @@ mod tests {
         let rule = make_rule(dir.path().to_str().unwrap(), false, Some(vec!["*.csv"]));
         let events = create_events(Event::Create);
 
-        assert!(!evaluate_rule(&file, &events, &rule));
+        assert!(!evaluate_rule(&file, &events, None, &rule));
     }
 }
