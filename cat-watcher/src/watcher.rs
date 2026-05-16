@@ -4,10 +4,38 @@ use std::sync::Arc;
 
 use notify::{recommended_watcher, Event, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
+use walkdir::WalkDir;
 
 use crate::config::{Global, Rule};
 use crate::error::AppError;
 use crate::logger::Logger;
+use crate::router::EntryKind;
+
+/// ウォッチ対象を walk して EntryKind キャッシュを初期構築する。
+/// 監視開始前から存在するファイル/ディレクトリを Delete 時に識別するために使う。
+fn build_initial_cache(watch_map: &HashMap<PathBuf, RecursiveMode>) -> HashMap<PathBuf, EntryKind> {
+    let mut cache = HashMap::new();
+    for (path, mode) in watch_map {
+        let max_depth = if *mode == RecursiveMode::Recursive {
+            usize::MAX
+        } else {
+            1
+        };
+        for entry in WalkDir::new(path)
+            .max_depth(max_depth)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let p = entry.path().to_path_buf();
+            if entry.file_type().is_file() {
+                cache.insert(p, EntryKind::File);
+            } else if entry.file_type().is_dir() {
+                cache.insert(p, EntryKind::Dir);
+            }
+        }
+    }
+    cache
+}
 
 fn strip_unc_prefix(path: &PathBuf) -> String {
     let s = path.display().to_string();
@@ -89,7 +117,9 @@ pub async fn start_watching(
         })?;
     }
 
+    let initial_cache = build_initial_cache(&watch_map);
+
     let compiled_rules = crate::router::compile_rules(rules)?;
-    crate::router::run_router(rx, &compiled_rules, global, Arc::clone(&log)).await?;
+    crate::router::run_router(rx, &compiled_rules, global, Arc::clone(&log), initial_cache).await?;
     Ok(())
 }
