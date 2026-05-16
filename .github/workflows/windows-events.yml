@@ -1,0 +1,112 @@
+name: Windows Raw Events Observation
+
+on:
+  push:
+    branches: ["claude/raw-events-observer-Htqht"]
+  workflow_dispatch:
+
+jobs:
+  observe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build raw-events
+        run: cargo build -p raw-events
+
+      - name: Observe Windows events
+        shell: pwsh
+        run: |
+          $watchDir = "$env:TEMP\watch-test"
+          New-Item -ItemType Directory -Force -Path $watchDir | Out-Null
+          $outFile = "$env:TEMP\watcher-out.txt"
+
+          # バイナリを直接起動して stdout をファイルへ
+          $proc = Start-Process -FilePath ".\target\debug\raw-events.exe" `
+                                -ArgumentList $watchDir `
+                                -NoNewWindow -PassThru `
+                                -RedirectStandardOutput $outFile
+          Start-Sleep -Seconds 2
+
+          function Sep($label) {
+            Write-Host ""
+            Write-Host ">>> $label"
+            Start-Sleep -Milliseconds 600
+          }
+
+          Sep "ファイル作成 (New-Item)"
+          New-Item -ItemType File -Force -Path "$watchDir\a.txt" | Out-Null
+
+          Sep "ファイル書き込み (Set-Content)"
+          Set-Content -Path "$watchDir\a.txt" -Value "hello"
+
+          Sep "ファイル追記 (Add-Content)"
+          Add-Content -Path "$watchDir\a.txt" -Value "world"
+
+          Sep "ファイルリネーム (Rename-Item)"
+          Rename-Item -Path "$watchDir\a.txt" -NewName "b.txt"
+
+          Sep "ファイル削除 (Remove-Item)"
+          Remove-Item -Path "$watchDir\b.txt"
+
+          Sep "ディレクトリ作成"
+          New-Item -ItemType Directory -Force -Path "$watchDir\subdir" | Out-Null
+
+          Sep "サブディレクトリにファイル作成"
+          Set-Content -Path "$watchDir\subdir\c.txt" -Value "nested"
+
+          Sep "サブディレクトリ内ファイルリネーム"
+          Rename-Item -Path "$watchDir\subdir\c.txt" -NewName "d.txt"
+
+          Sep "サブディレクトリ内ファイル削除"
+          Remove-Item -Path "$watchDir\subdir\d.txt"
+
+          Sep "ディレクトリ削除（空）"
+          Remove-Item -Force -Path "$watchDir\subdir"
+
+          Sep "ディレクトリ削除（中にファイルあり）"
+          New-Item -ItemType Directory -Force -Path "$watchDir\subdir2" | Out-Null
+          Set-Content -Path "$watchDir\subdir2\x.txt" -Value "x"
+          Set-Content -Path "$watchDir\subdir2\y.txt" -Value "y"
+          Start-Sleep -Milliseconds 600
+          Remove-Item -Recurse -Force -Path "$watchDir\subdir2"
+
+          Sep "ファイルコピー (Copy-Item)"
+          Set-Content -Path "$watchDir\src.txt" -Value "copy me"
+          Start-Sleep -Milliseconds 600
+          Copy-Item -Path "$watchDir\src.txt" -Destination "$watchDir\dst.txt"
+          Start-Sleep -Milliseconds 600
+          Remove-Item "$watchDir\src.txt", "$watchDir\dst.txt"
+
+          Sep "ファイル移動（同ディレクトリ内 mv 相当）"
+          Set-Content -Path "$watchDir\mv-src.txt" -Value "move me"
+          Start-Sleep -Milliseconds 600
+          Move-Item -Path "$watchDir\mv-src.txt" -Destination "$watchDir\mv-dst.txt"
+          Start-Sleep -Milliseconds 600
+          Remove-Item "$watchDir\mv-dst.txt"
+
+          Start-Sleep -Seconds 2
+          $proc.Kill()
+          Start-Sleep -Milliseconds 500
+
+          Write-Host ""
+          Write-Host "======== WATCHER OUTPUT ========"
+          Get-Content $outFile
+
+      - name: Upload watcher output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-events-output
+          path: ${{ env.TEMP }}\watcher-out.txt
