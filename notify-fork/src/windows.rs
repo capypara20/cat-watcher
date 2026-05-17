@@ -104,7 +104,7 @@ static RDCEXW_FN: OnceLock<Option<RdcExWFn>> = OnceLock::new();
 fn rdcexw_fn() -> Option<RdcExWFn> {
     *RDCEXW_FN.get_or_init(|| unsafe {
         let h = GetModuleHandleA(b"kernel32.dll\0".as_ptr());
-        if h == 0 {
+        if h.is_null() {
             return None;
         }
         GetProcAddress(h, b"ReadDirectoryChangesExW\0".as_ptr())
