@@ -44,10 +44,12 @@ pub struct CompiledRule{
 	pub exclude_glob_set: Option<GlobSet>,
 	pub regexes: Option<Regex>,
 	pub actions: Vec<ActionConfig>,
+	pub rule_logger: Option<Arc<Logger>>,
 }
 
-pub fn compile_rules(rules: &[Rule]) -> Result<Vec<CompiledRule>, AppError> {
+pub fn compile_rules(rules: &[Rule], global: &Global) -> Result<(Vec<CompiledRule>, Vec<tokio::task::JoinHandle<()>>), AppError> {
 	let mut compiled_rules = Vec::new();
+	let mut log_handles = Vec::new();
 	for rule in rules{
 		let glob_set = if let Some(patterns) = &rule.watch.patterns {
 			let mut builder = GlobSetBuilder::new();
@@ -77,6 +79,26 @@ pub fn compile_rules(rules: &[Rule]) -> Result<Vec<CompiledRule>, AppError> {
 			None
 		};
 		
+		let rule_logger = if let Some(rule_log) = &rule.log {
+			if rule_log.enabled {
+				let log_dir = rule_log.log_dir.clone()
+					.unwrap_or_else(|| global.log_dir.clone());
+				let log_file_name = rule_log.log_file_name.clone()
+					.unwrap_or_else(|| global.log_file_name.clone());
+				let log_rotation = rule_log.log_rotation.clone()
+					.unwrap_or_else(|| global.log_rotation.clone());
+				let file_level = global.file_log_level.clone()
+					.unwrap_or_else(|| global.log_level.clone());
+				let (logger, handle) = Logger::for_rule(log_dir, log_file_name, log_rotation, file_level)?;
+				log_handles.push(handle);
+				Some(Arc::new(logger))
+			} else {
+				None
+			}
+		} else {
+			None
+		};
+
 		compiled_rules.push(CompiledRule {
 			name: rule.name.clone(),
 			enabled: rule.enabled,
@@ -89,9 +111,10 @@ pub fn compile_rules(rules: &[Rule]) -> Result<Vec<CompiledRule>, AppError> {
 			exclude_glob_set,
 			regexes,
 			actions: rule.actions.clone(),
+			rule_logger,
 		});
 	}
-	Ok(compiled_rules)
+	Ok((compiled_rules, log_handles))
 }
 
 fn evaluate_rule(
@@ -253,6 +276,13 @@ pub async fn run_router(
                             path.display().to_string(),
                             detected_events.clone(),
                         );
+                        if let Some(rl) = &rule.rule_logger {
+                            rl.log_match(
+                                &rule.name,
+                                path.display().to_string(),
+                                detected_events.clone(),
+                            );
+                        }
 
                         let watch_path = PathBuf::from(&rule.watch_path);
                         if let Err(e) = crate::actions::execute_chain(
@@ -261,11 +291,18 @@ pub async fn run_router(
                             &watch_path,
                             global,
                             Arc::clone(&log),
+                            rule.rule_logger.clone(),
                         ).await {
                             log.error(format!(
                                 "アクションチェーン実行エラー: ルール={}, パス={}, エラー={}",
                                 rule.name, path.display(), e
                             ));
+                            if let Some(rl) = &rule.rule_logger {
+                                rl.error(format!(
+                                    "アクションチェーン実行エラー: パス={}, エラー={}",
+                                    path.display(), e
+                                ));
+                            }
                         }
                     }
                 }
@@ -307,6 +344,7 @@ mod tests {
             exclude_glob_set: None,
             regexes: None,
             actions: vec![],
+            rule_logger: None,
         }
     }
 
@@ -407,6 +445,7 @@ mod tests {
             exclude_glob_set: None,
             regexes: None,
             actions: vec![],
+            rule_logger: None,
         }
     }
 

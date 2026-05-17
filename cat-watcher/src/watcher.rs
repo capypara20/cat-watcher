@@ -119,7 +119,17 @@ pub async fn start_watching(
 
     let initial_cache = build_initial_cache(&watch_map);
 
-    let compiled_rules = crate::router::compile_rules(rules)?;
+    let (compiled_rules, rule_log_handles) = crate::router::compile_rules(rules, global)?;
     crate::router::run_router(rx, &compiled_rules, global, Arc::clone(&log), initial_cache).await?;
+
+    // ルール別ロガーをシャットダウン
+    for rule in &compiled_rules {
+        if let Some(rl) = &rule.rule_logger {
+            rl.shutdown();
+        }
+    }
+    for handle in rule_log_handles {
+        let _ = handle.await;
+    }
     Ok(())
 }

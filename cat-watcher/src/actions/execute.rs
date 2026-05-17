@@ -70,6 +70,8 @@ mod tests {
             retry_interval_ms: 0,
             log_to_console: false,
             log_to_file: false,
+            terminal_log_level: None,
+            file_log_level: None,
         }
     }
 
@@ -104,6 +106,8 @@ mod tests {
             retry_interval_ms: 0,
             log_to_console: false,
             log_to_file: false,
+            terminal_log_level: None,
+            file_log_level: None,
         };
         std::mem::forget(dir);
         let (logger, _) = Logger::new(&global).unwrap();
