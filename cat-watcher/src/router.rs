@@ -148,17 +148,18 @@ fn evaluate_rule(
 /// target フィルタ: file/directory/both の判定
 ///
 /// kind はイベント受信時点でキャッシュ or notify サブタイプから解決済み。
-/// Delete 後はパスが消えているため is_file()/is_dir() が使えないが、
-/// kind が Some であればキャッシュ由来の情報で正しく判定できる。
+/// Delete 後はパスが消えているため is_file()/is_dir() が false になるが、
+/// その場合は kind=None かつ !path.exists() → 判別不能なので通過させる。
+/// (旧 Windows の Remove(Any) でキャッシュミスが発生しても Delete を検知できるようにするため)
 fn matches_target(path: &Path, target: &WatchTarget, kind: Option<EntryKind>) -> bool {
     match target {
         WatchTarget::Both => true,
         WatchTarget::File => kind
             .map(|k| k == EntryKind::File)
-            .unwrap_or_else(|| path.is_file()),
+            .unwrap_or_else(|| path.is_file() || !path.exists()),
         WatchTarget::Directory => kind
             .map(|k| k == EntryKind::Dir)
-            .unwrap_or_else(|| path.is_dir()),
+            .unwrap_or_else(|| path.is_dir() || !path.exists()),
     }
 }
 
@@ -480,19 +481,20 @@ mod tests {
         assert!(!evaluate_rule(&path, &events, Some(EntryKind::Dir), &rule));
     }
 
-    // kind=None かつパスが存在しない場合 (旧 Windows 無キャッシュ) はマッチしない
+    // kind=None かつパスが存在しない場合 (旧 Windows 無キャッシュ / Delete 後) はマッチする
+    // ファイルか ディレクトリかを区別できないが、削除済みパスは通過させて false negative を防ぐ
     #[test]
-    fn test_delete_no_kind_no_path_does_not_match_target_file() {
+    fn test_delete_no_kind_no_path_matches_target_file() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("ghost.txt"); // 存在しないパス
+        let path = dir.path().join("ghost.txt"); // 存在しないパス (削除済み想定)
         let rule = make_rule_with_target_and_events(
             dir.path().to_str().unwrap(),
             WatchTarget::File,
             vec![Event::Delete],
         );
         let events = create_events(Event::Delete);
-        // kind も path も解決できない → false (キャッシュが必要なケース)
-        assert!(!evaluate_rule(&path, &events, None, &rule));
+        // kind=None かつ path が存在しない → 判別不能なので通過 (target=file も target=dir も true)
+        assert!(evaluate_rule(&path, &events, None, &rule));
     }
 
     // target=dir + kind=Dir → マッチする
