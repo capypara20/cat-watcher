@@ -103,6 +103,10 @@ pub struct RulesConfig {
     pub rules: Vec<Rule>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Global {
     pub log_level: LogLevel,
@@ -111,6 +115,10 @@ pub struct Global {
     pub log_rotation: LogRotation,
     pub retry_count: u32,
     pub retry_interval_ms: u64,
+    #[serde(default = "default_true")]
+    pub log_to_console: bool,
+    #[serde(default = "default_true")]
+    pub log_to_file: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -563,6 +571,8 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
+				log_to_console: true,
+				log_to_file: true,
 			},
 		};
 		let result = validate_global_config(&config);
@@ -579,6 +589,8 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
+				log_to_console: true,
+				log_to_file: true,
 			},
 		};
 		let result = validate_global_config(&config);
@@ -596,6 +608,8 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
+				log_to_console: true,
+				log_to_file: true,
 			},
 		};
 		let result = validate_global_config(&config);
@@ -613,6 +627,8 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
+				log_to_console: true,
+				log_to_file: true,
 			},
 		};
 		let result = validate_global_config(&config);
@@ -630,6 +646,8 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
+				log_to_console: true,
+				log_to_file: true,
 			},
 		};
 		let result = validate_global_config(&config);

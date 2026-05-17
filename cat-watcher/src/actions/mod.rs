@@ -26,11 +26,12 @@ pub async fn execute_chain(
 
     for (i, action) in actions.iter().enumerate() {
         let index = i + 1;
+        let step = (index, total);
         match action.type_ {
             ActionType::Copy => {
                 let dest_str = action.destination.as_deref().unwrap_or("");
                 log.log_action(index, total, "copy", format!("{} → {}", src.display(), dest_str));
-                let result = copy::execute(action, src, &ctx, global, Arc::clone(&log)).await?;
+                let result = copy::execute(action, src, &ctx, global, Arc::clone(&log), step).await?;
                 if let Some(dest_file) = result {
                     ctx.destination = dest_file.to_string_lossy().replace('\\', "/");
                 }
@@ -38,7 +39,7 @@ pub async fn execute_chain(
             ActionType::Move => {
                 let dest_str = action.destination.as_deref().unwrap_or("");
                 log.log_action(index, total, "move", format!("{} → {}", src.display(), dest_str));
-                let result = r#move::execute(action, src, &ctx, global, Arc::clone(&log)).await?;
+                let result = r#move::execute(action, src, &ctx, global, Arc::clone(&log), step).await?;
                 if let Some(dest_file) = result {
                     ctx.destination = dest_file.to_string_lossy().replace('\\', "/");
                 }
@@ -47,18 +48,20 @@ pub async fn execute_chain(
                 let shell = action.shell.as_deref().unwrap_or("");
                 let cmd = action.command.as_deref().unwrap_or("");
                 log.log_action(index, total, "command", format!("shell={shell}  cmd={cmd}"));
-                command::execute(action, &ctx, global, Arc::clone(&log)).await?;
+                command::execute(action, &ctx, global, Arc::clone(&log), step).await?;
             }
             ActionType::Execute => {
                 let program = action.program.as_deref().unwrap_or("");
-                log.log_action(index, total, "execute", format!("program={program}"));
-                execute::execute(action, &ctx, global, Arc::clone(&log)).await?;
+                let args = action.args.as_deref().unwrap_or(&[]);
+                let args_str = args.join(" ");
+                log.log_action(index, total, "execute", format!("{program} {args_str}").trim_end().to_string());
+                execute::execute(action, &ctx, global, Arc::clone(&log), step).await?;
             }
             ActionType::Log => {
                 let raw = action.message.as_deref().unwrap_or("");
                 let msg = expand_placeholders(raw, &ctx)?;
                 log.log_action(index, total, "log", "");
-                log.info(msg);
+                log.log_action_ok(index, total, msg);
             }
         }
     }

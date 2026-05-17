@@ -23,6 +23,7 @@ pub async fn execute(
     ctx: &PlaceholderContext,
     global: &Global,
     log: Arc<Logger>,
+    step: (usize, usize),
 ) -> Result<Option<PathBuf>, AppError> {
     let dest_root = expand_action_destination(action, ctx)?;
 
@@ -41,11 +42,12 @@ pub async fn execute(
             verify_integrity,
             global,
             log,
+            step,
         )
         .await
     } else {
         let dest_file = resolve_dest_path(src, &dest_root, watch_path, preserve_structure)?;
-        move_one_file(src, &dest_file, overwrite, verify_integrity, global, log).await
+        move_one_file(src, &dest_file, overwrite, verify_integrity, global, log, step).await
     }
 }
 
@@ -57,6 +59,7 @@ async fn move_one_file(
     verify_integrity: bool,
     global: &Global,
     log: Arc<Logger>,
+    step: (usize, usize),
 ) -> Result<Option<PathBuf>, AppError> {
     if dest.exists() && !overwrite {
         log.warn(format!(
@@ -79,7 +82,7 @@ async fn move_one_file(
     // まず rename を試みる（同一ボリューム）
     match tokio::fs::rename(src, dest).await {
         Ok(()) => {
-            log.success(format!("移動完了 (rename): {} → {}", src.display(), dest.display()));
+            log.log_action_ok(step.0, step.1, format!("移動完了 (rename): {} → {}", src.display(), dest.display()));
             return Ok(Some(dest.to_path_buf()));
         }
         Err(e) if is_cross_device(&e) => {
@@ -115,7 +118,7 @@ async fn move_one_file(
                 let hash_suffix = maybe_hash
                     .map(|h| format!("  [BLAKE3: {h}]"))
                     .unwrap_or_default();
-                log.success(format!(
+                log.log_action_ok(step.0, step.1, format!(
                     "移動完了 (copy+delete): {} → {}{}",
                     src.display(),
                     dest.display(),
@@ -154,6 +157,7 @@ async fn move_directory_recursive(
     verify_integrity: bool,
     global: &Global,
     log: Arc<Logger>,
+    step: (usize, usize),
 ) -> Result<Option<PathBuf>, AppError> {
     let folder_dest = if preserve_structure {
         let rel = src_dir
@@ -182,7 +186,7 @@ async fn move_directory_recursive(
             .strip_prefix(src_dir)
             .map_err(|e| AppError::Action(format!("配下相対パス解決失敗: {}", e)))?;
         let entry_dest = folder_dest.join(rel);
-        move_one_file(entry, &entry_dest, overwrite, verify_integrity, global, Arc::clone(&log)).await?;
+        move_one_file(entry, &entry_dest, overwrite, verify_integrity, global, Arc::clone(&log), step).await?;
     }
 
     tokio::fs::remove_dir_all(src_dir).await.map_err(|e| {
@@ -233,6 +237,8 @@ mod tests {
             log_rotation: LogRotation::Never,
             retry_count,
             retry_interval_ms: 10,
+            log_to_console: false,
+            log_to_file: false,
         }
     }
 
@@ -273,6 +279,8 @@ mod tests {
             log_rotation: LogRotation::Never,
             retry_count: 0,
             retry_interval_ms: 0,
+            log_to_console: false,
+            log_to_file: false,
         };
         std::mem::forget(dir);
         let (logger, _) = Logger::new(&global).unwrap();
@@ -290,7 +298,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        let result = execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         assert_eq!(result, Some(dest.path().join("a.txt")));
         assert!(dest.path().join("a.txt").exists());
         assert!(!src.exists(), "元ファイルが残っている");
@@ -308,7 +316,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        let result = execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         assert_eq!(result, None);
         assert_eq!(std::fs::read(dest.path().join("a.txt")).unwrap(), b"old");
         assert!(src.exists(), "スキップ時は元ファイルを保持");
@@ -326,7 +334,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         assert_eq!(std::fs::read(dest.path().join("a.txt")).unwrap(), b"new");
         assert!(!src.exists());
     }
@@ -342,7 +350,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         assert!(dest.path().join("sub/deep/a.txt").exists());
         assert!(!src.exists());
     }
@@ -359,7 +367,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src_dir, watch.path(), "");
 
-        let result = execute(&action, &src_dir, &ctx, &global, make_logger()).await.unwrap();
+        let result = execute(&action, &src_dir, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         assert_eq!(result, Some(dest.path().join("mydir")));
         assert!(dest.path().join("mydir/a.txt").exists());
         assert!(dest.path().join("mydir/sub/b.txt").exists());
@@ -377,7 +385,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        let result = execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         assert!(result.is_some());
         assert!(!src.exists());
     }
@@ -397,7 +405,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        let result = execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         let dest_path = result.expect("移動成功");
         assert!(dest_path.exists());
         assert_eq!(dest_path.file_name().unwrap(), "a.txt");
@@ -414,7 +422,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        let result = execute(&action, &src, &ctx, &global, make_logger()).await;
+        let result = execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await;
         assert!(result.is_err(), "存在しないファイルの move はエラー");
     }
 
