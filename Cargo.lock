@@ -148,7 +148,7 @@ dependencies = [
  "clap",
  "colored",
  "globset",
- "notify 8.2.0",
+ "notify",
  "regex",
  "serde",
  "tempfile",
@@ -668,24 +668,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "notify"
-version = "8.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d3d07927151ff8575b7087f245456e549fea62edf0ec4e565a5ee50c8402bc3"
-dependencies = [
- "bitflags",
- "fsevent-sys",
- "inotify",
- "kqueue",
- "libc",
- "log",
- "mio",
- "notify-types",
- "walkdir",
- "windows-sys 0.60.2",
-]
-
-[[package]]
 name = "notify-types"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -792,7 +774,7 @@ name = "raw-events"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "notify 8.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "notify",
 ]
 
 [[package]]
