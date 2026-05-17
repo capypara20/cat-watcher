@@ -9,11 +9,30 @@ use tokio::sync::mpsc;
 
 use crate::config::{Global, LogLevel, LogRotation};
 use crate::error::AppError;
+use unicode_width::UnicodeWidthStr;
 
 const SEPARATOR: &str = "──────────────────────────────────────────────────────────────";
 
 const FILE_LEVEL_WIDTH: usize = 7;
 const FILE_EVENTS_WIDTH: usize = 27;
+
+/// 表示列幅 (East Asian Width, CJK モード) で左寄せパディングする。
+/// Rust 標準の `format!("{:<width$}")` は char 数で揃えるため、
+/// '└' '│' '├' '─' などの罫線記号で表示時に列幅がズレる。
+/// 本プロジェクトは日本語ロケール (CJK) を主用途とするため、
+/// East Asian Ambiguous 文字を 2 列幅として扱う `width_cjk()` を使う。
+fn pad_left_display(s: &str, total_cols: usize) -> String {
+    let w = UnicodeWidthStr::width_cjk(s);
+    if w >= total_cols {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len() + (total_cols - w));
+    out.push_str(s);
+    for _ in 0..(total_cols - w) {
+        out.push(' ');
+    }
+    out
+}
 
 #[derive(Debug)]
 pub enum LogEntry {
@@ -191,44 +210,54 @@ fn action_type_short(action_type: &str) -> &str {
     }
 }
 
-/// ファイルログ用 level カラム文字列（FILE_LEVEL_WIDTH 幅）を生成する。
+/// ファイルログ用 level カラム文字列（FILE_LEVEL_WIDTH **列** 幅）を生成する。
+/// 全角記号 ('└' '├' '│') を含むため、char 数ではなく表示列幅でパディングする。
 fn file_level_col(entry: &LogEntry) -> String {
     match entry {
-        LogEntry::Match { .. } => format!("{:<width$}", "MATCH", width = FILE_LEVEL_WIDTH),
+        LogEntry::Match { .. } => pad_left_display("MATCH", FILE_LEVEL_WIDTH),
         LogEntry::Action { index, total, action_type, .. } => {
             let tree = if *index == *total { '└' } else { '├' };
             let short = action_type_short(action_type);
             let index_str = index.to_string();
-            let index_len = index_str.len();
-            // tree(1) + index + space(1) + type; truncate type to fit in FILE_LEVEL_WIDTH
-            let type_max = FILE_LEVEL_WIDTH.saturating_sub(1 + index_len + 1);
-            let type_part: String = short.chars().take(type_max).collect();
-            format!("{:<width$}", format!("{}{} {}", tree, index_str, type_part), width = FILE_LEVEL_WIDTH)
+            // tree ('└'/'├' は CJK で 列幅 2) + index + space(1) + type で
+            // FILE_LEVEL_WIDTH 列に収める。type も CJK 列幅基準で切り詰める。
+            let used_cols = 2 + index_str.len() + 1;
+            let type_max_cols = FILE_LEVEL_WIDTH.saturating_sub(used_cols);
+            let mut type_part = String::new();
+            let mut used = 0usize;
+            for c in short.chars() {
+                let cw = UnicodeWidthStr::width_cjk(c.to_string().as_str());
+                if used + cw > type_max_cols { break; }
+                type_part.push(c);
+                used += cw;
+            }
+            let head = format!("{}{} {}", tree, index_str, type_part);
+            pad_left_display(&head, FILE_LEVEL_WIDTH)
         }
         LogEntry::ActionOk { index, total, .. } => {
             if *index == *total {
                 // 最終ステップ完了: 継続パイプなし
-                format!("{:<width$}", "   OK", width = FILE_LEVEL_WIDTH)
+                pad_left_display("   OK", FILE_LEVEL_WIDTH)
             } else {
-                // 中間ステップ完了: 継続パイプあり
-                format!("{:<width$}", "│   OK", width = FILE_LEVEL_WIDTH)
+                // 中間ステップ完了: 継続パイプあり ('│' は列幅 2)
+                pad_left_display("│   OK", FILE_LEVEL_WIDTH)
             }
         }
-        LogEntry::Info(_) => format!("{:<width$}", "INFO", width = FILE_LEVEL_WIDTH),
-        LogEntry::Warn(_) => format!("{:<width$}", "WARN", width = FILE_LEVEL_WIDTH),
-        LogEntry::Error(_) => format!("{:<width$}", "ERROR", width = FILE_LEVEL_WIDTH),
+        LogEntry::Info(_) => pad_left_display("INFO", FILE_LEVEL_WIDTH),
+        LogEntry::Warn(_) => pad_left_display("WARN", FILE_LEVEL_WIDTH),
+        LogEntry::Error(_) => pad_left_display("ERROR", FILE_LEVEL_WIDTH),
         LogEntry::Shutdown => unreachable!(),
     }
 }
 
-/// ファイルログ用 events カラム文字列（FILE_EVENTS_WIDTH 幅）を生成する。
+/// ファイルログ用 events カラム文字列（FILE_EVENTS_WIDTH **列** 幅）を生成する。
 /// MATCH エントリのみイベント名を出力し、それ以外は空白で埋める。
 fn file_events_col(entry: &LogEntry) -> String {
     let s = match entry {
         LogEntry::Match { events, .. } => format_events(events),
         _ => String::new(),
     };
-    format!("{:<width$}", s, width = FILE_EVENTS_WIDTH)
+    pad_left_display(&s, FILE_EVENTS_WIDTH)
 }
 
 /// ファイルログ用 content カラムを生成する。
@@ -417,4 +446,51 @@ fn format_events(events: &HashSet<crate::config::Event>) -> String {
         .collect();
     names.sort();
     names.join(",")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 罫線文字 ('└') は East Asian Ambiguous で、CJK モードでは 2 列幅。
+    /// "└1 log" は 2+1+1+1+1+1 = 7 列、ピッタリ収まる。
+    #[test]
+    fn test_pad_left_display_with_eaw_chars() {
+        let s = pad_left_display("└1 log", 7);
+        assert_eq!(UnicodeWidthStr::width_cjk(s.as_str()), 7);
+        assert_eq!(s, "└1 log"); // 既に 7 列なので追加スペースなし
+    }
+
+    /// ASCII のみの文字列は char 数と CJK 列幅が一致する
+    #[test]
+    fn test_pad_left_display_ascii() {
+        let s = pad_left_display("MATCH", 7);
+        assert_eq!(s, "MATCH  ");
+        assert_eq!(UnicodeWidthStr::width_cjk(s.as_str()), 7);
+    }
+
+    /// '│' は CJK で 2 列幅。"│   OK" は 2+3+2 = 7 列。
+    #[test]
+    fn test_pad_left_display_middle_action_ok() {
+        let s = pad_left_display("│   OK", 7);
+        assert_eq!(UnicodeWidthStr::width_cjk(s.as_str()), 7);
+    }
+
+    /// 列幅オーバーは切り詰めず返す (元の動作維持)
+    #[test]
+    fn test_pad_left_display_overflow() {
+        let s = pad_left_display("VERYLONGTEXT", 5);
+        assert_eq!(s, "VERYLONGTEXT");
+    }
+
+    /// 罫線なしのレベル文字列が CJK 列幅 7 列で揃う
+    #[test]
+    fn test_pad_left_display_info_aligns_with_match() {
+        let info = pad_left_display("INFO", FILE_LEVEL_WIDTH);
+        let match_ = pad_left_display("MATCH", FILE_LEVEL_WIDTH);
+        let action_ok = pad_left_display("│   OK", FILE_LEVEL_WIDTH);
+        assert_eq!(UnicodeWidthStr::width_cjk(info.as_str()), FILE_LEVEL_WIDTH);
+        assert_eq!(UnicodeWidthStr::width_cjk(match_.as_str()), FILE_LEVEL_WIDTH);
+        assert_eq!(UnicodeWidthStr::width_cjk(action_ok.as_str()), FILE_LEVEL_WIDTH);
+    }
 }
