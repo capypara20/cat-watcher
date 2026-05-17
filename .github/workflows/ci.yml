@@ -4,6 +4,8 @@ on:
   push:
     branches-ignore:
       - main
+      - "claude/**"
+      - "experiment/**"
   pull_request:
 
 jobs:
