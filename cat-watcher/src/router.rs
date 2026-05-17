@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use notify::EventKind;
-use notify::event::{CreateKind, RemoveKind};
+use notify::event::{CreateKind, ModifyKind, RemoveKind};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use crate::{config::{ActionConfig, Event, Global, Rule, WatchTarget}, error::AppError};
@@ -176,6 +176,9 @@ fn matches_events(detected: &HashSet<Event>, rule_events: &[Event]) -> bool {
 fn to_config_event(kind:  &EventKind) -> Option<Event> {
 	match kind {
 		EventKind::Create(_) => Some(Event::Create),
+		// notify はリネームを EventKind::Modify(ModifyKind::Name(_)) として通知するため、
+		// 通常の Modify と区別して Event::Rename にマッピングする
+		EventKind::Modify(ModifyKind::Name(_)) => Some(Event::Rename),
 		EventKind::Modify(_) => Some(Event::Modify),
 		EventKind::Remove(_) => Some(Event::Delete),
 		_ => None,
@@ -589,5 +592,36 @@ mod tests {
         );
         let events = create_events(Event::Delete);
         assert!(!evaluate_rule(&path, &events, Some(EntryKind::Dir), &rule));
+    }
+
+    // -----------------------------------------------------------------
+    // to_config_event: Rename マッピング (issue #30 回帰テスト)
+    // -----------------------------------------------------------------
+    use notify::event::RenameMode;
+
+    #[test]
+    fn test_to_config_event_rename_from() {
+        let kind = EventKind::Modify(ModifyKind::Name(RenameMode::From));
+        assert_eq!(to_config_event(&kind), Some(Event::Rename));
+    }
+
+    #[test]
+    fn test_to_config_event_rename_to() {
+        let kind = EventKind::Modify(ModifyKind::Name(RenameMode::To));
+        assert_eq!(to_config_event(&kind), Some(Event::Rename));
+    }
+
+    #[test]
+    fn test_to_config_event_rename_any() {
+        let kind = EventKind::Modify(ModifyKind::Name(RenameMode::Any));
+        assert_eq!(to_config_event(&kind), Some(Event::Rename));
+    }
+
+    // Rename 以外の Modify は引き続き Modify として扱う
+    #[test]
+    fn test_to_config_event_modify_data_still_modify() {
+        use notify::event::{DataChange, ModifyKind};
+        let kind = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+        assert_eq!(to_config_event(&kind), Some(Event::Modify));
     }
 }
