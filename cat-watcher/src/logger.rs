@@ -56,7 +56,10 @@ impl Logger {
         colored::control::set_virtual_terminal(true).ok();
         colored::control::set_override(true);
 
-        let level = global.log_level.clone();
+        let terminal_level = global.terminal_log_level.clone()
+            .unwrap_or_else(|| global.log_level.clone());
+        let file_level = global.file_log_level.clone()
+            .unwrap_or_else(|| global.log_level.clone());
         let log_dir = global.log_dir.clone();
         let log_file_name = global.log_file_name.clone();
         let log_rotation = global.log_rotation.clone();
@@ -67,10 +70,32 @@ impl Logger {
             rx,
             log_dir,
             log_file_name,
-            level,
+            terminal_level,
+            file_level,
             log_rotation,
             log_to_console,
             log_to_file,
+        ));
+        Ok((Self { tx }, handle))
+    }
+
+    /// ルール別ログ専用ロガー（ファイル出力のみ、コンソール出力なし）。
+    pub fn for_rule(
+        log_dir: String,
+        log_file_name: String,
+        log_rotation: LogRotation,
+        file_level: LogLevel,
+    ) -> Result<(Self, tokio::task::JoinHandle<()>), AppError> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let handle = tokio::spawn(writer_task(
+            rx,
+            log_dir,
+            log_file_name,
+            LogLevel::Error, // terminal は無効（log_to_console=false のため参照されない）
+            file_level,
+            log_rotation,
+            false, // log_to_console
+            true,  // log_to_file
         ));
         Ok((Self { tx }, handle))
     }
@@ -224,7 +249,8 @@ async fn writer_task(
     mut rx: mpsc::UnboundedReceiver<LogEntry>,
     log_dir: String,
     log_file_name: String,
-    level: LogLevel,
+    terminal_level: LogLevel,
+    file_level: LogLevel,
     log_rotation: LogRotation,
     log_to_console: bool,
     log_to_file: bool,
@@ -256,7 +282,7 @@ async fn writer_task(
             let file_line = match &entry {
                 LogEntry::Match { .. } | LogEntry::Action { .. } | LogEntry::ActionOk { .. }
                 | LogEntry::Info(_) | LogEntry::Warn(_) | LogEntry::Error(_) => {
-                    if !level_enabled_for_entry(&level, &entry) {
+                    if !level_enabled_for_entry(&file_level, &entry) {
                         String::new()
                     } else {
                         let lv = file_level_col(&entry);
@@ -276,7 +302,7 @@ async fn writer_task(
         if log_to_console {
             match &entry {
                 LogEntry::Match { rule_name, path, events } => {
-                    if !level_enabled(&level, &LogLevel::Info) { continue; }
+                    if !level_enabled(&terminal_level, &LogLevel::Info) { continue; }
                     let event_str = format_events(events);
                     let term_line = format!(
                         "{}\n{} {}",
@@ -288,7 +314,7 @@ async fn writer_task(
                 }
 
                 LogEntry::Action { index, total, action_type, detail } => {
-                    if !level_enabled(&level, &LogLevel::Info) { continue; }
+                    if !level_enabled(&terminal_level, &LogLevel::Info) { continue; }
                     let term_line = format!(
                         "{} {}",
                         format!("[{ts}] [ACTION]").blue().bold(),
@@ -298,7 +324,7 @@ async fn writer_task(
                 }
 
                 LogEntry::ActionOk { msg, .. } => {
-                    if !level_enabled(&level, &LogLevel::Info) { continue; }
+                    if !level_enabled(&terminal_level, &LogLevel::Info) { continue; }
                     let term_line = format!(
                         "{} {}",
                         format!("[{ts}] [OK]    ").green().bold(),
@@ -308,7 +334,7 @@ async fn writer_task(
                 }
 
                 LogEntry::Info(msg) => {
-                    if !level_enabled(&level, &LogLevel::Info) { continue; }
+                    if !level_enabled(&terminal_level, &LogLevel::Info) { continue; }
                     let term_line = format!(
                         "{} {}",
                         format!("[{ts}] [INFO]").cyan(),
@@ -318,7 +344,7 @@ async fn writer_task(
                 }
 
                 LogEntry::Warn(msg) => {
-                    if !level_enabled(&level, &LogLevel::Warn) { continue; }
+                    if !level_enabled(&terminal_level, &LogLevel::Warn) { continue; }
                     let term_line = format!(
                         "{} {}",
                         format!("[{ts}] [WARN]").yellow().bold(),
@@ -328,7 +354,7 @@ async fn writer_task(
                 }
 
                 LogEntry::Error(msg) => {
-                    if !level_enabled(&level, &LogLevel::Error) { continue; }
+                    if !level_enabled(&terminal_level, &LogLevel::Error) { continue; }
                     let term_line = format!(
                         "{} {}",
                         format!("[{ts}] [ERROR]").red().bold(),
