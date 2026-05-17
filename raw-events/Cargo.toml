@@ -6,3 +6,7 @@ edition = "2021"
 [dependencies]
 notify = "8.2.0"
 chrono = { version = "0.4", features = ["now"] }
+
+[[bin]]
+name = "raw-events-ex"
+path = "src/bin/raw_events_ex.rs"
