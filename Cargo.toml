@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "cat-watcher",
+    "notify-fork",
     "raw-events",
 ]
 resolver = "3"
