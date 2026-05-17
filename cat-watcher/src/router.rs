@@ -6,10 +6,39 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use notify::EventKind;
+use notify::event::{CreateKind, ModifyKind, RemoveKind};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use crate::{config::{ActionConfig, Event, Global, Rule, WatchTarget}, error::AppError};
 use crate::logger::Logger;
+
+/// イベントが指すエントリの種別。
+/// notify サブタイプ (Create/Remove のみ確実) から取得。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EntryKind {
+    File,
+    Dir,
+}
+
+/// notify のイベントサブタイプから EntryKind を取得する。
+///
+/// Windows 10 1709+ では `notify-fork` が `ReadDirectoryChangesExW` を使い、
+/// Create / Remove で File/Folder の種別を返してくれるためここで判別できる。
+/// Modify(Any) / Modify(Name(_)) は種別なし (Modify はそもそも File にしか起きない、
+/// Rename はパスがまだ存在するので呼び出し側で `path.is_file/is_dir()` で解決する)。
+///
+/// 旧 Windows (Win10 旧版 / Server 2016 等) や notify が `Any` を返す経路では None。
+fn kind_from_notify_event(event: &notify::Event) -> Option<EntryKind> {
+    match &event.kind {
+        EventKind::Create(CreateKind::File) | EventKind::Remove(RemoveKind::File) => {
+            Some(EntryKind::File)
+        }
+        EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) => {
+            Some(EntryKind::Dir)
+        }
+        _ => None,
+    }
+}
 
 pub struct CompiledRule{
 	pub name: String,
@@ -73,9 +102,14 @@ pub fn compile_rules(rules: &[Rule]) -> Result<Vec<CompiledRule>, AppError> {
 	Ok(compiled_rules)
 }
 
-fn evaluate_rule(path: &Path, detected_events: &HashSet<Event>, rule: &CompiledRule) -> bool {
+fn evaluate_rule(
+    path: &Path,
+    detected_events: &HashSet<Event>,
+    kind: Option<EntryKind>,
+    rule: &CompiledRule,
+) -> bool {
 	if !rule.enabled { return false; }
-    if !matches_target(path, &rule.target) { return false; }
+    if !matches_target(path, &rule.target, kind) { return false; }
     if !matches_hidden(path, rule.include_hidden) { return false; }
 
     let watch_path = Path::new(&rule.watch_path);
@@ -96,16 +130,28 @@ fn evaluate_rule(path: &Path, detected_events: &HashSet<Event>, rule: &CompiledR
     true
 }
 
-/// target フィルタ: file/directory/both の判定
-fn matches_target(path: &Path, target: &WatchTarget) -> bool{
-	match target {
-		WatchTarget::Both => true, // ターゲットが両方なら常にマッチ
-		WatchTarget::File => path.is_file(), // ファイルであればマッチ
-		WatchTarget::Directory => path.is_dir(), // ディレクトリであればマッチ
-		// TODO: deleteイベント時はファイルが存在しないため判定不可
-		// 		 notify の EventKindから指定すれば判定可能かも
-		
-	}
+/// target フィルタ: file/directory/both の判定。
+///
+/// kind は notify サブタイプ (CreateKind / RemoveKind) から取得済み。
+/// - Create / Remove は notify-fork が File/Folder を通知 → kind=Some
+/// - Modify / Rename は kind=None → パスが存在するので path.is_file/is_dir() で判定
+/// - 旧 Windows (Win10 1709 未満 / Server 2016 等) で Remove(Any) かつ kind=None
+///   の場合はパスが消えていて判定不能。target=file / target=directory には
+///   マッチさせず、target=both を使う運用とする (README で案内予定)。
+fn matches_target(path: &Path, target: &WatchTarget, kind: Option<EntryKind>) -> bool {
+    match target {
+        WatchTarget::Both => true,
+        WatchTarget::File => match kind {
+            Some(EntryKind::File) => true,
+            Some(EntryKind::Dir) => false,
+            None => path.is_file(),
+        },
+        WatchTarget::Directory => match kind {
+            Some(EntryKind::Dir) => true,
+            Some(EntryKind::File) => false,
+            None => path.is_dir(),
+        },
+    }
 }
 
 /// include_hidden フィルタ（Phase 12 まではスタブ）
@@ -141,9 +187,12 @@ fn matches_events(detected: &HashSet<Event>, rule_events: &[Event]) -> bool {
     rule_events.iter().any(|e| detected.contains(e))
 }
 
-fn to_config_event(kind:  &EventKind) -> Option<Event> {
+fn to_config_event(kind: &EventKind) -> Option<Event> {
 	match kind {
 		EventKind::Create(_) => Some(Event::Create),
+		// notify はリネームを EventKind::Modify(ModifyKind::Name(_)) として通知するため、
+		// 通常の Modify と区別して Event::Rename にマッピングする (issue #30)
+		EventKind::Modify(ModifyKind::Name(_)) => Some(Event::Rename),
 		EventKind::Modify(_) => Some(Event::Modify),
 		EventKind::Remove(_) => Some(Event::Delete),
 		_ => None,
@@ -156,8 +205,9 @@ pub async fn run_router(
     global: &Global,
     log: Arc<Logger>,
 ) -> Result<(), AppError> {
-    // デバウンス用マップ: パス → (イベント集合, 最後の受信時刻)
-    let mut pending: HashMap<PathBuf, (HashSet<Event>, Instant)> = HashMap::new();
+    // デバウンス用マップ: パス → (イベント集合, 最後の受信時刻, EntryKind)
+    // EntryKind は notify サブタイプから推定したもの。確実な (Some) 値が来たら上書き。
+    let mut pending: HashMap<PathBuf, (HashSet<Event>, Instant, Option<EntryKind>)> = HashMap::new();
     let mut interval = tokio::time::interval(Duration::from_millis(100));
 
     loop {
@@ -165,13 +215,19 @@ pub async fn run_router(
             // (A) watcher からイベント受信 → pending に蓄積
             Some(res) = rx.recv() => {
                 if let Ok(event) = res {
+                    let notify_kind = kind_from_notify_event(&event);
                     if let Some(config_event) = to_config_event(&event.kind) {
                         for path in &event.paths {
                             let entry = pending
                                 .entry(path.clone())
-                                .or_insert_with(|| (HashSet::new(), Instant::now()));
+                                .or_insert_with(|| (HashSet::new(), Instant::now(), notify_kind));
                             entry.0.insert(config_event.clone());
                             entry.1 = Instant::now();
+                            // notify から確実な種別が取れたら上書きする
+                            // (Create/Remove は種別が来る、Modify/Rename は None)
+                            if notify_kind.is_some() {
+                                entry.2 = notify_kind;
+                            }
                         }
                     }
                 }
@@ -180,15 +236,15 @@ pub async fn run_router(
             // (B) 100ms タイマー → 500ms 経過分を取り出して評価
             _ = interval.tick() => {
                 let now = Instant::now();
-                let ready: Vec<(PathBuf, HashSet<Event>)> = pending.iter()
-                    .filter(|(_, (_, last))| now.duration_since(*last) >= Duration::from_millis(500))
-                    .map(|(path, (events, _))| (path.clone(), events.clone()))
+                let ready: Vec<(PathBuf, HashSet<Event>, Option<EntryKind>)> = pending.iter()
+                    .filter(|(_, (_, last, _))| now.duration_since(*last) >= Duration::from_millis(500))
+                    .map(|(path, (events, _, kind))| (path.clone(), events.clone(), *kind))
                     .collect();
 
-                for (path, detected_events) in ready {
+                for (path, detected_events, kind) in ready {
                     pending.remove(&path);
                     for rule in compiled_rules {
-                        if !evaluate_rule(&path, &detected_events, rule) {
+                        if !evaluate_rule(&path, &detected_events, kind, rule) {
                             continue;
                         }
 
@@ -274,8 +330,8 @@ mod tests {
         std::fs::write(&file_in_a, "").unwrap();
         let events = create_events(Event::Create);
 
-        assert!(evaluate_rule(&file_in_a, &events, &rule_a), "dir_a のルールはマッチすべき");
-        assert!(!evaluate_rule(&file_in_a, &events, &rule_b), "dir_b のルールはマッチしてはいけない");
+        assert!(evaluate_rule(&file_in_a, &events, None, &rule_a), "dir_a のルールはマッチすべき");
+        assert!(!evaluate_rule(&file_in_a, &events, None, &rule_b), "dir_b のルールはマッチしてはいけない");
     }
 
     // recursive=false でサブディレクトリのファイルが除外されることを確認
@@ -290,7 +346,7 @@ mod tests {
         let rule = make_rule(dir.path().to_str().unwrap(), false, Some(vec!["*.csv"]));
         let events = create_events(Event::Create);
 
-        assert!(!evaluate_rule(&file_in_sub, &events, &rule), "サブディレクトリのファイルはマッチしてはいけない");
+        assert!(!evaluate_rule(&file_in_sub, &events, None, &rule), "サブディレクトリのファイルはマッチしてはいけない");
     }
 
     // recursive=true ではサブディレクトリのファイルもマッチすることを確認
@@ -305,7 +361,7 @@ mod tests {
         let rule = make_rule(dir.path().to_str().unwrap(), true, Some(vec!["*.csv"]));
         let events = create_events(Event::Create);
 
-        assert!(evaluate_rule(&file_in_sub, &events, &rule), "recursive=true ならサブディレクトリもマッチすべき");
+        assert!(evaluate_rule(&file_in_sub, &events, None, &rule), "recursive=true ならサブディレクトリもマッチすべき");
     }
 
     // 直下のファイルは recursive=false でもマッチすることを確認
@@ -318,7 +374,7 @@ mod tests {
         let rule = make_rule(dir.path().to_str().unwrap(), false, Some(vec!["*.csv"]));
         let events = create_events(Event::Create);
 
-        assert!(evaluate_rule(&file, &events, &rule));
+        assert!(evaluate_rule(&file, &events, None, &rule));
     }
 
     // パターンに合わないファイルは除外されることを確認
@@ -331,6 +387,87 @@ mod tests {
         let rule = make_rule(dir.path().to_str().unwrap(), false, Some(vec!["*.csv"]));
         let events = create_events(Event::Create);
 
-        assert!(!evaluate_rule(&file, &events, &rule));
+        assert!(!evaluate_rule(&file, &events, None, &rule));
+    }
+
+    // -----------------------------------------------------------------
+    // to_config_event: Rename / Modify サブタイプのマッピング (#30 回帰)
+    // -----------------------------------------------------------------
+    use notify::event::{DataChange, RenameMode};
+
+    #[test]
+    fn test_to_config_event_rename_from() {
+        let kind = EventKind::Modify(ModifyKind::Name(RenameMode::From));
+        assert_eq!(to_config_event(&kind), Some(Event::Rename));
+    }
+
+    #[test]
+    fn test_to_config_event_rename_to() {
+        let kind = EventKind::Modify(ModifyKind::Name(RenameMode::To));
+        assert_eq!(to_config_event(&kind), Some(Event::Rename));
+    }
+
+    #[test]
+    fn test_to_config_event_rename_any() {
+        let kind = EventKind::Modify(ModifyKind::Name(RenameMode::Any));
+        assert_eq!(to_config_event(&kind), Some(Event::Rename));
+    }
+
+    #[test]
+    fn test_to_config_event_modify_data_still_modify() {
+        let kind = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+        assert_eq!(to_config_event(&kind), Some(Event::Modify));
+    }
+
+    // -----------------------------------------------------------------
+    // matches_target: kind ベース判定 (#23 / #24 回帰)
+    // -----------------------------------------------------------------
+
+    // target=file + Remove(File) → kind=Some(File) でマッチ (削除後でも判定できる)
+    #[test]
+    fn test_matches_target_file_with_kind_file() {
+        let path = Path::new("/nonexistent/will_not_exist.txt");
+        assert!(matches_target(path, &WatchTarget::File, Some(EntryKind::File)));
+        assert!(!matches_target(path, &WatchTarget::File, Some(EntryKind::Dir)));
+    }
+
+    // target=directory + Remove(Folder) → kind=Some(Dir) でマッチ
+    #[test]
+    fn test_matches_target_directory_with_kind_dir() {
+        let path = Path::new("/nonexistent/will_not_exist_dir");
+        assert!(matches_target(path, &WatchTarget::Directory, Some(EntryKind::Dir)));
+        assert!(!matches_target(path, &WatchTarget::Directory, Some(EntryKind::File)));
+    }
+
+    // target=both は kind に関係なく常に true
+    #[test]
+    fn test_matches_target_both_always_true() {
+        let path = Path::new("/nonexistent/whatever");
+        assert!(matches_target(path, &WatchTarget::Both, Some(EntryKind::File)));
+        assert!(matches_target(path, &WatchTarget::Both, Some(EntryKind::Dir)));
+        assert!(matches_target(path, &WatchTarget::Both, None));
+    }
+
+    // kind=None + 実在ファイル → File にマッチ (Modify/Rename パスの fallback)
+    #[test]
+    fn test_matches_target_file_kind_none_existing_file() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("real.txt");
+        std::fs::write(&file, "").unwrap();
+        assert!(matches_target(&file, &WatchTarget::File, None));
+        assert!(!matches_target(&file, &WatchTarget::Directory, None));
+    }
+
+    // kind=None + パスなし (旧 Windows の Remove(Any) や Rename(From) の旧パス等)
+    // → 判定不能なので target=file / target=directory どちらにも通さない (厳格)。
+    //   旧 OS で Delete を確実に拾いたい場合は target=both を使う運用とする。
+    //   target=both は kind に依存しないので常に通る。
+    #[test]
+    fn test_matches_target_kind_none_path_missing_does_not_match() {
+        let path = Path::new("/definitely/does/not/exist_xyz_12345");
+        assert!(!matches_target(path, &WatchTarget::File, None));
+        assert!(!matches_target(path, &WatchTarget::Directory, None));
+        // target=both は通る
+        assert!(matches_target(path, &WatchTarget::Both, None));
     }
 }
