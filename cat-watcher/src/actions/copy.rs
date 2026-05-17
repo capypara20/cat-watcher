@@ -22,6 +22,7 @@ pub async fn execute(
     ctx: &PlaceholderContext,
     global: &Global,
     log: Arc<Logger>,
+    step: (usize, usize),
 ) -> Result<Option<PathBuf>, AppError> {
     let dest_root = expand_action_destination(action, ctx)?;
 
@@ -40,11 +41,12 @@ pub async fn execute(
             verify_integrity,
             global,
             log,
+            step,
         )
         .await
     } else {
         let dest_file = resolve_dest_path(src, &dest_root, watch_path, preserve_structure)?;
-        copy_one_file(src, &dest_file, overwrite, verify_integrity, global, log).await
+        copy_one_file(src, &dest_file, overwrite, verify_integrity, global, log, step).await
     }
 }
 
@@ -56,6 +58,7 @@ async fn copy_one_file(
     verify_integrity: bool,
     global: &Global,
     log: Arc<Logger>,
+    step: (usize, usize),
 ) -> Result<Option<PathBuf>, AppError> {
     if dest.exists() && !overwrite {
         log.warn(format!(
@@ -84,7 +87,10 @@ async fn copy_one_file(
                 let hash_suffix = maybe_hash
                     .map(|h| format!("  [BLAKE3: {h}]"))
                     .unwrap_or_default();
-                log.success(format!("コピー完了: {} → {}{}", src.display(), dest.display(), hash_suffix));
+                log.log_action_ok(step.0, step.1, format!(
+                    "コピー完了: {} → {}{}",
+                    src.display(), dest.display(), hash_suffix
+                ));
                 return Ok(Some(dest.to_path_buf()));
             }
             Err(e) => {
@@ -118,6 +124,7 @@ async fn copy_directory_recursive(
     verify_integrity: bool,
     global: &Global,
     log: Arc<Logger>,
+    step: (usize, usize),
 ) -> Result<Option<PathBuf>, AppError> {
     let folder_dest = if preserve_structure {
         let rel = src_dir
@@ -146,7 +153,7 @@ async fn copy_directory_recursive(
             .strip_prefix(src_dir)
             .map_err(|e| AppError::Action(format!("配下相対パス解決失敗: {}", e)))?;
         let entry_dest = folder_dest.join(rel);
-        copy_one_file(&entry, &entry_dest, overwrite, verify_integrity, global, Arc::clone(&log)).await?;
+        copy_one_file(&entry, &entry_dest, overwrite, verify_integrity, global, Arc::clone(&log), step).await?;
     }
 
     Ok(Some(folder_dest))
@@ -168,6 +175,10 @@ mod tests {
             log_rotation: LogRotation::Never,
             retry_count,
             retry_interval_ms: 10,
+            log_to_console: false,
+            log_to_file: false,
+            terminal_log_level: None,
+            file_log_level: None,
         }
     }
 
@@ -209,6 +220,10 @@ mod tests {
             log_rotation: LogRotation::Never,
             retry_count: 0,
             retry_interval_ms: 0,
+            log_to_console: false,
+            log_to_file: false,
+            terminal_log_level: None,
+            file_log_level: None,
         };
         std::mem::forget(dir);
         let (logger, _) = Logger::new(&global).unwrap();
@@ -226,7 +241,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        let result = execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         let dest_file = dest.path().join("a.txt");
         assert!(dest_file.exists());
         assert_eq!(result, Some(dest_file));
@@ -243,7 +258,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         assert!(dest.path().join("sub/deep/a.txt").exists());
     }
 
@@ -260,7 +275,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        let result = execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         assert_eq!(result, None);
         assert_eq!(std::fs::read(&dest_file).unwrap(), b"old");
     }
@@ -278,7 +293,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         assert_eq!(std::fs::read(&dest_file).unwrap(), b"new");
     }
 
@@ -293,7 +308,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        let result = execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         assert!(result.is_some());
         assert!(dest.path().join("a.txt").exists());
     }
@@ -310,7 +325,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src_dir, watch.path(), "");
 
-        let result = execute(&action, &src_dir, &ctx, &global, make_logger()).await.unwrap();
+        let result = execute(&action, &src_dir, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         assert_eq!(result, Some(dest.path().join("mydir")));
         assert!(dest.path().join("mydir/a.txt").exists());
         assert!(dest.path().join("mydir/sub/b.txt").exists());
@@ -331,7 +346,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        let result = execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         let dest_path = result.expect("コピー成功");
 
         assert!(dest_path.exists(), "コピー先ファイルが存在しない: {}", dest_path.display());
@@ -356,7 +371,7 @@ mod tests {
         let global = make_global(0);
         let ctx = PlaceholderContext::new(&src, watch.path(), "");
 
-        let result = execute(&action, &src, &ctx, &global, make_logger()).await.unwrap();
+        let result = execute(&action, &src, &ctx, &global, make_logger(), (1, 1)).await.unwrap();
         let expected = dest.path().join("a").join("a.txt");
         assert_eq!(result.as_deref(), Some(expected.as_path()));
         assert!(expected.exists());

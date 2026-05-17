@@ -12,6 +12,7 @@ pub async fn execute(
     ctx: &PlaceholderContext,
     _global: &Global,
     log: Arc<Logger>,
+    step: (usize, usize),
 ) -> Result<(), AppError> {
     let raw_command = action
         .command
@@ -42,7 +43,7 @@ pub async fn execute(
         ))
     })?;
 
-    log.info(format!("コマンド起動: shell={shell} cmd={expanded}"));
+    log.log_action_ok(step.0, step.1, "起動");
     Ok(())
 }
 
@@ -87,6 +88,10 @@ mod tests {
             log_rotation: LogRotation::Never,
             retry_count: 0,
             retry_interval_ms: 0,
+            log_to_console: false,
+            log_to_file: false,
+            terminal_log_level: None,
+            file_log_level: None,
         }
     }
 
@@ -119,6 +124,10 @@ mod tests {
             log_rotation: LogRotation::Never,
             retry_count: 0,
             retry_interval_ms: 0,
+            log_to_console: false,
+            log_to_file: false,
+            terminal_log_level: None,
+            file_log_level: None,
         };
         std::mem::forget(dir);
         let (logger, _) = Logger::new(&global).unwrap();
@@ -133,7 +142,7 @@ mod tests {
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("bash", "echo hi", "");
         let global = make_global();
-        let result = execute(&action, &ctx, &global, make_logger()).await;
+        let result = execute(&action, &ctx, &global, make_logger(), (1, 1)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("不明なシェル"));
     }
@@ -147,7 +156,7 @@ mod tests {
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("cmd", "echo hello", "");
         let global = make_global();
-        assert!(execute(&action, &ctx, &global, make_logger()).await.is_ok());
+        assert!(execute(&action, &ctx, &global, make_logger(), (1, 1)).await.is_ok());
     }
 
     #[cfg(target_os = "windows")]
@@ -159,7 +168,7 @@ mod tests {
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("cmd", "echo {Name}", "");
         let global = make_global();
-        assert!(execute(&action, &ctx, &global, make_logger()).await.is_ok());
+        assert!(execute(&action, &ctx, &global, make_logger(), (1, 1)).await.is_ok());
     }
 
     #[cfg(target_os = "windows")]
@@ -171,7 +180,7 @@ mod tests {
         let ctx = make_ctx(&src, dir.path());
         let action = make_action("cmd", "echo hi", dir.path().to_str().unwrap());
         let global = make_global();
-        assert!(execute(&action, &ctx, &global, make_logger()).await.is_ok());
+        assert!(execute(&action, &ctx, &global, make_logger(), (1, 1)).await.is_ok());
     }
 
     #[test]

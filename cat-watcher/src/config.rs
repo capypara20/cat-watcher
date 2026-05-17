@@ -103,6 +103,10 @@ pub struct RulesConfig {
     pub rules: Vec<Rule>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Global {
     pub log_level: LogLevel,
@@ -111,6 +115,23 @@ pub struct Global {
     pub log_rotation: LogRotation,
     pub retry_count: u32,
     pub retry_interval_ms: u64,
+    #[serde(default = "default_true")]
+    pub log_to_console: bool,
+    #[serde(default = "default_true")]
+    pub log_to_file: bool,
+    /// ターミナル出力専用ログレベル。省略時は log_level を使用。
+    pub terminal_log_level: Option<LogLevel>,
+    /// ファイル出力専用ログレベル。省略時は log_level を使用。
+    pub file_log_level: Option<LogLevel>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RuleLog {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub log_dir: Option<String>,
+    pub log_file_name: Option<String>,
+    pub log_rotation: Option<LogRotation>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -119,6 +140,7 @@ pub struct Rule {
     pub name: String,
     pub watch: Watch,
     pub actions: Vec<ActionConfig>,
+    pub log: Option<RuleLog>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -277,6 +299,36 @@ pub fn validate_rules_config(config: &RulesConfig) -> Result<(), AppError> {
 		for glob in &rule.watch.exclude_patterns {
 			if let Err(e) = Glob::new(glob) {
 				errors.push(format!("監視ルール名 {} の exclude_patterns に無効な glob があります '{}': {}", rule_id, glob, e));
+			}
+		}
+
+		if let Some(rule_log) = &rule.log {
+			if rule_log.enabled {
+				if let Some(dir) = &rule_log.log_dir {
+					let p = Path::new(dir);
+					if !p.exists() {
+						errors.push(format!("監視ルール名 {} の log.log_dir が存在しません: {}", rule_id, dir));
+					} else if !p.is_dir() {
+						errors.push(format!("監視ルール名 {} の log.log_dir にディレクトリ以外のパスが指定されています: {}", rule_id, dir));
+					}
+				}
+				if let Some(file_name) = &rule_log.log_file_name {
+					if file_name.trim().is_empty() {
+						errors.push(format!("監視ルール名 {} の log.log_file_name が空文字列です", rule_id));
+					} else {
+						let valid_placeholders = ["Date", "DateTime"];
+						let re = regex::Regex::new(r"\{([A-Za-z]+)\}").unwrap();
+						for caps in re.captures_iter(file_name) {
+							let name = &caps[1];
+							if !valid_placeholders.contains(&name) {
+								errors.push(format!(
+									"監視ルール名 {} の log.log_file_name に使用できないプレースホルダーがあります: {{{name}}}",
+									rule_id
+								));
+							}
+						}
+					}
+				}
 			}
 		}
 	}
@@ -563,6 +615,10 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
+				log_to_console: true,
+				log_to_file: true,
+				terminal_log_level: None,
+				file_log_level: None,
 			},
 		};
 		let result = validate_global_config(&config);
@@ -579,6 +635,10 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
+				log_to_console: true,
+				log_to_file: true,
+				terminal_log_level: None,
+				file_log_level: None,
 			},
 		};
 		let result = validate_global_config(&config);
@@ -596,6 +656,10 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
+				log_to_console: true,
+				log_to_file: true,
+				terminal_log_level: None,
+				file_log_level: None,
 			},
 		};
 		let result = validate_global_config(&config);
@@ -613,6 +677,10 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
+				log_to_console: true,
+				log_to_file: true,
+				terminal_log_level: None,
+				file_log_level: None,
 			},
 		};
 		let result = validate_global_config(&config);
@@ -630,6 +698,10 @@ mod tests {
 				log_rotation: LogRotation::Daily,
 				retry_count: 3,
 				retry_interval_ms: 1000,
+				log_to_console: true,
+				log_to_file: true,
+				terminal_log_level: None,
+				file_log_level: None,
 			},
 		};
 		let result = validate_global_config(&config);
