@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-notify = "8.2.0"
+notify = { path = "../notify-fork" }
 chrono = { version = "0.4", features = ["now"] }
 
 [[bin]]
