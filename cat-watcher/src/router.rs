@@ -125,17 +125,18 @@ fn evaluate_rule(
 /// target フィルタ: file/directory/both の判定
 ///
 /// kind はイベント受信時点でキャッシュ or notify サブタイプから解決済み。
-/// Delete 後はパスが消えているため is_file()/is_dir() が使えないが、
-/// kind が Some であればキャッシュ由来の情報で正しく判定できる。
+/// Delete 後はパスが消えているため is_file()/is_dir() が false になるが、
+/// その場合は kind=None かつ !path.exists() → 判別不能なので通過させる。
+/// (旧 Windows の Remove(Any) でキャッシュミスが発生しても Delete を検知できるようにするため)
 fn matches_target(path: &Path, target: &WatchTarget, kind: Option<EntryKind>) -> bool {
     match target {
         WatchTarget::Both => true,
         WatchTarget::File => kind
             .map(|k| k == EntryKind::File)
-            .unwrap_or_else(|| path.is_file()),
+            .unwrap_or_else(|| path.is_file() || !path.exists()),
         WatchTarget::Directory => kind
             .map(|k| k == EntryKind::Dir)
-            .unwrap_or_else(|| path.is_dir()),
+            .unwrap_or_else(|| path.is_dir() || !path.exists()),
     }
 }
 
@@ -388,5 +389,205 @@ mod tests {
         let events = create_events(Event::Create);
 
         assert!(!evaluate_rule(&file, &events, None, &rule));
+    }
+
+    fn make_rule_with_target_and_events(
+        watch_path: &str,
+        target: WatchTarget,
+        events: Vec<Event>,
+    ) -> CompiledRule {
+        CompiledRule {
+            name: "test-rule".to_string(),
+            enabled: true,
+            watch_path: watch_path.to_string(),
+            recursive: true,
+            target,
+            include_hidden: false,
+            events,
+            glob_set: None,
+            exclude_glob_set: None,
+            regexes: None,
+            actions: vec![],
+        }
+    }
+
+    // ── Issue #23 回帰テスト: target=file + delete ────────────────────────────
+
+    // kind=File が明示的に渡された場合、削除後でも target=file にマッチする
+    #[test]
+    fn test_delete_file_with_kind_file_matches_target_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("data.csv");
+        let rule = make_rule_with_target_and_events(
+            dir.path().to_str().unwrap(),
+            WatchTarget::File,
+            vec![Event::Delete],
+        );
+        let events = create_events(Event::Delete);
+        // ファイルは削除済み (path が存在しない) だが kind=File があるのでマッチする
+        assert!(evaluate_rule(&path, &events, Some(EntryKind::File), &rule));
+    }
+
+    // kind=Dir が来た場合、target=file にはマッチしない
+    #[test]
+    fn test_delete_dir_does_not_match_target_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("subdir");
+        let rule = make_rule_with_target_and_events(
+            dir.path().to_str().unwrap(),
+            WatchTarget::File,
+            vec![Event::Delete],
+        );
+        let events = create_events(Event::Delete);
+        assert!(!evaluate_rule(&path, &events, Some(EntryKind::Dir), &rule));
+    }
+
+    // kind=None かつパスが存在しない場合 (旧 Windows 無キャッシュ / Delete 後) はマッチする
+    // ファイルか ディレクトリかを区別できないが、削除済みパスは通過させて false negative を防ぐ
+    #[test]
+    fn test_delete_no_kind_no_path_matches_target_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("ghost.txt"); // 存在しないパス (削除済み想定)
+        let rule = make_rule_with_target_and_events(
+            dir.path().to_str().unwrap(),
+            WatchTarget::File,
+            vec![Event::Delete],
+        );
+        let events = create_events(Event::Delete);
+        // kind=None かつ path が存在しない → 判別不能なので通過 (target=file も target=dir も true)
+        assert!(evaluate_rule(&path, &events, None, &rule));
+    }
+
+    // target=dir + kind=Dir → マッチする
+    #[test]
+    fn test_delete_dir_with_kind_dir_matches_target_dir() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("removed_dir");
+        let rule = make_rule_with_target_and_events(
+            dir.path().to_str().unwrap(),
+            WatchTarget::Directory,
+            vec![Event::Delete],
+        );
+        let events = create_events(Event::Delete);
+        assert!(evaluate_rule(&path, &events, Some(EntryKind::Dir), &rule));
+    }
+
+    // target=dir + kind=File → マッチしない
+    #[test]
+    fn test_delete_file_does_not_match_target_dir() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("data.csv");
+        let rule = make_rule_with_target_and_events(
+            dir.path().to_str().unwrap(),
+            WatchTarget::Directory,
+            vec![Event::Delete],
+        );
+        let events = create_events(Event::Delete);
+        assert!(!evaluate_rule(&path, &events, Some(EntryKind::File), &rule));
+    }
+
+    // target=both + kind=File → マッチする
+    #[test]
+    fn test_delete_file_matches_target_both() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("data.csv");
+        let rule = make_rule_with_target_and_events(
+            dir.path().to_str().unwrap(),
+            WatchTarget::Both,
+            vec![Event::Delete],
+        );
+        let events = create_events(Event::Delete);
+        assert!(evaluate_rule(&path, &events, Some(EntryKind::File), &rule));
+    }
+
+    // ── Issue #24 回帰テスト: target=both + delete で親ディレクトリが誤マッチしない ──
+
+    // ファイル削除後に親ディレクトリが Modify だけ受け取った場合、
+    // events=["delete"] ルールにマッチしないこと
+    #[test]
+    fn test_parent_dir_modify_does_not_match_delete_rule() {
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().to_path_buf(); // 親ディレクトリ自身のパス
+        let rule = make_rule_with_target_and_events(
+            dir.path().to_str().unwrap(),
+            WatchTarget::Both,
+            vec![Event::Delete],
+        );
+        // 親ディレクトリは Modify のみ蓄積（ファイル削除の副作用）
+        let events = create_events(Event::Modify);
+        assert!(!evaluate_rule(&parent, &events, Some(EntryKind::Dir), &rule));
+    }
+
+    // Modify と Delete が混在している場合は Delete ルールにマッチする
+    #[test]
+    fn test_mixed_modify_delete_events_matches_delete_rule() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("data.csv");
+        let rule = make_rule_with_target_and_events(
+            dir.path().to_str().unwrap(),
+            WatchTarget::Both,
+            vec![Event::Delete],
+        );
+        let mut events = HashSet::new();
+        events.insert(Event::Modify);
+        events.insert(Event::Delete);
+        assert!(evaluate_rule(&path, &events, Some(EntryKind::File), &rule));
+    }
+
+    // 親ディレクトリが Modify のみ、events=["delete","modify"] の場合はマッチする
+    // (これは仕様通りの動作 — modify も監視対象なので)
+    #[test]
+    fn test_parent_dir_modify_matches_when_modify_in_rule() {
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().to_path_buf();
+        let rule = make_rule_with_target_and_events(
+            dir.path().to_str().unwrap(),
+            WatchTarget::Both,
+            vec![Event::Delete, Event::Modify],
+        );
+        let events = create_events(Event::Modify);
+        assert!(evaluate_rule(&parent, &events, Some(EntryKind::Dir), &rule));
+    }
+
+    // rm -r: ディレクトリ内ファイルが Remove(File) で来た場合、target=file にマッチ
+    #[test]
+    fn test_rm_r_inner_file_matches_target_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("subdir").join("inner.txt");
+        let rule = make_rule_with_target_and_events(
+            dir.path().to_str().unwrap(),
+            WatchTarget::File,
+            vec![Event::Delete],
+        );
+        let events = create_events(Event::Delete);
+        assert!(evaluate_rule(&path, &events, Some(EntryKind::File), &rule));
+    }
+
+    // rm -r: ディレクトリ自体が Remove(Folder) で来た場合、target=dir にマッチ
+    #[test]
+    fn test_rm_r_dir_matches_target_dir() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("subdir");
+        let rule = make_rule_with_target_and_events(
+            dir.path().to_str().unwrap(),
+            WatchTarget::Directory,
+            vec![Event::Delete],
+        );
+        let events = create_events(Event::Delete);
+        assert!(evaluate_rule(&path, &events, Some(EntryKind::Dir), &rule));
+    }
+
+    // rm -r: ディレクトリ自体が Remove(Folder) で来た場合、target=file にはマッチしない
+    #[test]
+    fn test_rm_r_dir_does_not_match_target_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("subdir");
+        let rule = make_rule_with_target_and_events(
+            dir.path().to_str().unwrap(),
+            WatchTarget::File,
+            vec![Event::Delete],
+        );
+        let events = create_events(Event::Delete);
+        assert!(!evaluate_rule(&path, &events, Some(EntryKind::Dir), &rule));
     }
 }
