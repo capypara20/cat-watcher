@@ -11,7 +11,16 @@ use crate::logger::Logger;
 
 fn strip_unc_prefix(path: &PathBuf) -> String {
     let s = path.display().to_string();
-    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+    // canonicalize() は UNC パスを \\?\UNC\server\share 形式に変換する。
+    // \\?\UNC\ → \\ に変換して \\server\share の通常 UNC 形式に戻す。
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{}", rest);
+    }
+    // ローカルパスの拡張形式 \\?\C:\... → C:\... に変換。
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return rest.to_string();
+    }
+    s
 }
 
 pub async fn start_watching(
