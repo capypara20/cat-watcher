@@ -51,6 +51,9 @@ cat-watcher --init rules  --output config\rules.toml
 cat-watcher --global global.toml --rules rules.toml --validate
 cat-watcher --global global.toml --rules rules.toml
 
+# 引数の短縮系
+cat-watcher -g global.toml -r rules.toml
+
 # CSV をルール TOML に変換
 cat-watcher --from-csv rules.csv --output rules.toml
 ```
@@ -163,6 +166,7 @@ working_dir = ""
 ## CSV からの変換
 
 CSV の列順（1 行目はヘッダー、自動でスキップ）：
+** 未検証... **
 
 ```
 rule_name, enabled, watch_path, recursive, target, include_hidden,
@@ -199,11 +203,11 @@ shell, command, program, args, working_dir, message
 ```
 2026-05-07 10:30:20 │ INFO    │                             │ cat-watcher 起動
 2026-05-07 10:30:20 │ MATCH   │ Create,Modify               │ C:\data\report.csv
-2026-05-07 10:30:20 │ ├1 log │                             │ 
-2026-05-07 10:30:20 │ │   OK │                             │ 検知: report.csv
-2026-05-07 10:30:20 │ ├2 cop │                             │ C:\data\report.csv → D:\backup\{Date}
-2026-05-07 10:30:20 │ │   OK │                             │ コピー完了: C:\data\report.csv → D:\backup\20260507\report.csv  [BLAKE3: ...]
-2026-05-07 10:30:20 │ └3 cmd │                             │ shell=powershell  cmd=Write-Host 'Backed up: ...'
+2026-05-07 10:30:20 │ ├1 log  │                             │ 
+2026-05-07 10:30:20 │ │   OK  │                             │ 検知: report.csv
+2026-05-07 10:30:20 │ ├2 cop  │                             │ C:\data\report.csv → D:\backup\{Date}
+2026-05-07 10:30:20 │ │   OK  │                             │ コピー完了: C:\data\report.csv → D:\backup\20260507\report.csv  [BLAKE3: ...]
+2026-05-07 10:30:20 │ └3 cmd  │                             │ shell=powershell  cmd=Write-Host 'Backed up: ...'
 2026-05-07 10:30:20 │    OK   │                             │ 起動
 ```
 
