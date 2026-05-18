@@ -197,13 +197,14 @@ shell, command, program, args, working_dir, message
 **ファイル出力**（4列固定幅フォーマット）
 
 ```
-2026-05-07 10:30:20 │ MATCH   │ Create, Modify              │ ルール=csv-backup | パス=C:\data\report.csv
-2026-05-07 10:30:20 │ ACTION  │                             │ (1/3) log
-2026-05-07 10:30:20 │ INFO    │                             │ 検知: report.csv
-2026-05-07 10:30:20 │ ACTION  │                             │ (2/3) copy  C:\data\report.csv → D:\backup\20260507
-2026-05-07 10:30:20 │ OK      │                             │ コピー完了: C:\data\report.csv → D:\backup\20260507\report.csv  [BLAKE3: ...]
-2026-05-07 10:30:20 │ ACTION  │                             │ (3/3) command  shell=powershell  cmd=Write-Host 'Backed up: ...'
-2026-05-07 10:30:20 │ OK      │                             │ コマンド完了
+2026-05-07 10:30:20 │ INFO    │                             │ cat-watcher 起動
+2026-05-07 10:30:20 │ MATCH   │ Create,Modify               │ C:\data\report.csv
+2026-05-07 10:30:20 │ ├1 log │                             │ 
+2026-05-07 10:30:20 │ │   OK │                             │ 検知: report.csv
+2026-05-07 10:30:20 │ ├2 cop │                             │ C:\data\report.csv → D:\backup\{Date}
+2026-05-07 10:30:20 │ │   OK │                             │ コピー完了: C:\data\report.csv → D:\backup\20260507\report.csv  [BLAKE3: ...]
+2026-05-07 10:30:20 │ └3 cmd │                             │ shell=powershell  cmd=Write-Host 'Backed up: ...'
+2026-05-07 10:30:20 │    OK   │                             │ 起動
 ```
 
 `log_to_console = false` でターミナル出力を、`log_to_file = false` でファイル出力を無効にできます。`terminal_log_level` / `file_log_level` でそれぞれのログレベルを個別に設定することもできます。
