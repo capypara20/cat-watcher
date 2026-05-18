@@ -20,8 +20,8 @@ use std::slice;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_OPERATION_ABORTED, ERROR_SUCCESS, HANDLE,
-    INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_OPERATION_ABORTED, ERROR_SUCCESS, GetLastError,
+    HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ACTION_ADDED, FILE_ACTION_MODIFIED,
@@ -409,10 +409,21 @@ fn start_read(
         };
 
         if ret == 0 {
-            // error reading. retransmute request memory to allow drop.
-            // Because of the error, ownership of the `overlapped` alloc was not passed
-            // over to `ReadDirectoryChangesW`.
-            // So we can claim ownership back.
+            // The ReadDirectoryChanges call failed immediately (not async).
+            // Ownership of overlapped/request was NOT transferred to the OS,
+            // so we reclaim both before releasing the semaphore.
+            //
+            // Known cause: ReadDirectoryChangesExW with ReadDirectoryNotifyExtendedInformation
+            // (class 2) is unsupported on UNC/network paths — GetLastError() returns
+            // ERROR_INVALID_PARAMETER (87) or ERROR_NOT_SUPPORTED (50) in that case.
+            let err = GetLastError();
+            log::error!(
+                "ReadDirectoryChanges call failed (err={}) for directory `{}` — \
+                 UNC/network paths are not supported by ReadDirectoryChangesExW with \
+                 ExtendedInformation class; watch will not fire for this path.",
+                err,
+                rd.dir.display(),
+            );
             let _overlapped = Box::from_raw(overlapped);
             let request = Box::from_raw(request);
             ReleaseSemaphore(request.data.complete_sem, 1, ptr::null_mut());
