@@ -13,6 +13,8 @@
 - **整合性検証**: BLAKE3 ハッシュでコピー後のファイル一致を確認
 - **リトライ機構**: ロック等で失敗したアクションを自動再試行
 - **ログローテーション**: 日次でログファイルを切り替え（`log_rotation = "never"` で固定ファイルにも対応）
+- **ルール別ログ**: ルールごとに独立したログファイルへ出力（`[rules.log]` セクションで設定）
+- **ログ出力先の個別制御**: コンソール・ファイルを個別に有効/無効、ログレベルも別々に指定可能
 - **テンプレート生成**: `--init` で設定ファイルのひな形をすぐに出力できる
 - **全件エラー報告**: 設定ファイルに複数の問題があっても、1 回の起動で全エラーをまとめて表示
 - **大文字小文字不区別**: 設定値は `create` / `Create` / `CREATE` のいずれでも動作
@@ -65,6 +67,14 @@ log_file_name     = "cat-watcher_{Date}.log"  # {Date} / {DateTime} を埋め込
 log_rotation      = "daily"                   # daily / never
 retry_count       = 3
 retry_interval_ms = 1000
+
+# ログ出力先の制御（省略時はどちらも true）
+log_to_console    = true
+log_to_file       = true
+
+# コンソール・ファイルで異なるログレベルを使いたい場合に設定（省略時は log_level を使用）
+# terminal_log_level = "info"
+# file_log_level     = "debug"
 ```
 
 ### rules.toml（ルール定義）
@@ -83,6 +93,14 @@ patterns         = ["*.csv", "*.xlsx"]   # glob（regex と排他）
 # regex          = ".*\\.csv$"           # 正規表現（patterns と排他）
 exclude_patterns = ["temp_*"]
 events           = ["create", "modify"]  # create / modify / delete / rename
+
+# ── ルール別ログ（省略可）──────────────────────────────────────────────────
+# このルールにマッチしたイベントをルール専用のログファイルにも書き出す
+[rules.log]
+enabled       = true
+log_dir       = "D:\\logs\\csv-backup"
+log_file_name = "csv-backup_{Date}.log"  # {Date} / {DateTime} を埋め込み可
+log_rotation  = "daily"                  # daily / never
 
 # ──────────── アクションチェーン ────────────
 [[rules.actions]]
@@ -161,7 +179,9 @@ shell, command, program, args, working_dir, message
 
 ## ログ
 
-すべてのログ行は `[YYYY-MM-DD HH:MM:SS] [LEVEL] ...` のフォーマットでターミナルとファイルに出力されます。
+ターミナルとファイルでフォーマットが異なります。
+
+**ターミナル出力**（カラー付き）
 
 ```
 ──────────────────────────────────────────────────────────────
@@ -169,9 +189,24 @@ shell, command, program, args, working_dir, message
 [2026-05-07 10:30:20] [ACTION]  (1/3) log
 [2026-05-07 10:30:20] [INFO]    検知: report.csv
 [2026-05-07 10:30:20] [ACTION]  (2/3) copy  C:\data\report.csv → D:\backup\20260507
-[2026-05-07 10:30:20] [SUCCESS] コピー完了: C:\data\report.csv → D:\backup\20260507\report.csv  [BLAKE3: ...]
+[2026-05-07 10:30:20] [OK]      コピー完了: C:\data\report.csv → D:\backup\20260507\report.csv  [BLAKE3: ...]
 [2026-05-07 10:30:20] [ACTION]  (3/3) command  shell=powershell  cmd=Write-Host 'Backed up: ...'
+[2026-05-07 10:30:20] [OK]      コマンド完了
 ```
+
+**ファイル出力**（4列固定幅フォーマット）
+
+```
+2026-05-07 10:30:20 │ MATCH   │ Create, Modify              │ ルール=csv-backup | パス=C:\data\report.csv
+2026-05-07 10:30:20 │ ACTION  │                             │ (1/3) log
+2026-05-07 10:30:20 │ INFO    │                             │ 検知: report.csv
+2026-05-07 10:30:20 │ ACTION  │                             │ (2/3) copy  C:\data\report.csv → D:\backup\20260507
+2026-05-07 10:30:20 │ OK      │                             │ コピー完了: C:\data\report.csv → D:\backup\20260507\report.csv  [BLAKE3: ...]
+2026-05-07 10:30:20 │ ACTION  │                             │ (3/3) command  shell=powershell  cmd=Write-Host 'Backed up: ...'
+2026-05-07 10:30:20 │ OK      │                             │ コマンド完了
+```
+
+`log_to_console = false` でターミナル出力を、`log_to_file = false` でファイル出力を無効にできます。`terminal_log_level` / `file_log_level` でそれぞれのログレベルを個別に設定することもできます。
 
 ## 開発
 
