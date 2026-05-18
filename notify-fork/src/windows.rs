@@ -120,6 +120,11 @@ struct ReadData {
     file: Option<PathBuf>, // if a file is being watched, this is its full path
     complete_sem: HANDLE,
     is_recursive: bool,
+    // true  → ReadDirectoryChangesExW (RDNEI class=2, NTFS local only)
+    // false → ReadDirectoryChangesW   (UNC/network paths, non-NTFS, old Windows)
+    // Starts as true when ExW is available; flipped to false on first failure so
+    // subsequent reads skip the ExW attempt entirely.
+    use_extended: bool,
 }
 
 struct ReadDirectoryRequest {
@@ -305,6 +310,7 @@ impl ReadDirectoryChangesServer {
             file: wf,
             complete_sem: semaphore,
             is_recursive,
+            use_extended: rdcexw_fn().is_some(),
         };
         let ws = WatchState {
             dir_handle: handle,
@@ -378,24 +384,70 @@ fn start_read(
         let request = Box::leak(request);
         (*overlapped).hEvent = request as *mut _ as _;
 
-        let ret = if let Some(rdcexw) = rdcexw_fn() {
+        let ret = if request.data.use_extended {
             // Windows 10 1709+ / Server 2019+:
             // ReadDirectoryChangesExW で FILE_NOTIFY_EXTENDED_INFORMATION を取得。
             // FileAttributes フィールドで Create/Remove 時のファイル種別が判別できる。
-            rdcexw(
-                handle,
-                request.buffer.as_mut_ptr() as *mut c_void,
-                BUF_SIZE,
-                monitor_subdir,
-                flags,
-                &mut 0u32 as *mut u32,
-                overlapped,
-                Some(handle_event),
-                RDNEI,
-            )
+            // NTFS ローカルパスのみ対応。UNC/非 NTFS では ERROR_INVALID_FUNCTION 等で失敗する。
+            if let Some(rdcexw) = rdcexw_fn() {
+                let r = rdcexw(
+                    handle,
+                    request.buffer.as_mut_ptr() as *mut c_void,
+                    BUF_SIZE,
+                    monitor_subdir,
+                    flags,
+                    &mut 0u32 as *mut u32,
+                    overlapped,
+                    Some(handle_event),
+                    RDNEI,
+                );
+                if r != 0 {
+                    r
+                } else {
+                    // ExW 失敗 (UNC/非 NTFS 等) → ReadDirectoryChangesW にフォールバック。
+                    // use_extended を false にすることで以降の start_read 呼び出しで
+                    // ExW を再試行しない。
+                    // Create/Remove は Any サブタイプになる; Delete は target=both でのみ発火。
+                    let err = GetLastError();
+                    log::warn!(
+                        "ReadDirectoryChangesExW failed (err={}) for `{}`, \
+                         falling back to ReadDirectoryChangesW — \
+                         UNC/network paths and non-NTFS file systems are not supported \
+                         by ExtendedInformation class. \
+                         Create/Remove events will use Any subtype; \
+                         Delete events fire only when target=both.",
+                        err,
+                        rd.dir.display(),
+                    );
+                    (*request).data.use_extended = false;
+                    ReadDirectoryChangesW(
+                        handle,
+                        request.buffer.as_mut_ptr() as *mut c_void,
+                        BUF_SIZE,
+                        monitor_subdir,
+                        flags,
+                        &mut 0u32 as *mut u32,
+                        overlapped,
+                        Some(handle_event),
+                    )
+                }
+            } else {
+                // rdcexw_fn() が None のはずがない (use_extended は is_some() で初期化) が、
+                // 安全のため W にフォールバック。
+                (*request).data.use_extended = false;
+                ReadDirectoryChangesW(
+                    handle,
+                    request.buffer.as_mut_ptr() as *mut c_void,
+                    BUF_SIZE,
+                    monitor_subdir,
+                    flags,
+                    &mut 0u32 as *mut u32,
+                    overlapped,
+                    Some(handle_event),
+                )
+            }
         } else {
-            // 旧 Windows フォールバック: ReadDirectoryChangesW。
-            // Create/Remove イベントは Any サブタイプで通知される。
+            // 旧 Windows フォールバック、または ExW 失敗後の再呼び出し。
             ReadDirectoryChangesW(
                 handle,
                 request.buffer.as_mut_ptr() as *mut c_void,
@@ -409,18 +461,11 @@ fn start_read(
         };
 
         if ret == 0 {
-            // The ReadDirectoryChanges call failed immediately (not async).
-            // Ownership of overlapped/request was NOT transferred to the OS,
-            // so we reclaim both before releasing the semaphore.
-            //
-            // Known cause: ReadDirectoryChangesExW with ReadDirectoryNotifyExtendedInformation
-            // (class 2) is unsupported on UNC/network paths — GetLastError() returns
-            // ERROR_INVALID_PARAMETER (87) or ERROR_NOT_SUPPORTED (50) in that case.
+            // ReadDirectoryChanges が即時失敗。overlapped/request の所有権は OS に渡っていないので
+            // ここで回収してセマフォを解放する。
             let err = GetLastError();
             log::error!(
-                "ReadDirectoryChanges call failed (err={}) for directory `{}` — \
-                 UNC/network paths are not supported by ReadDirectoryChangesExW with \
-                 ExtendedInformation class; watch will not fire for this path.",
+                "ReadDirectoryChangesW failed (err={}) for `{}` — watch will not fire for this path.",
                 err,
                 rd.dir.display(),
             );
@@ -485,7 +530,7 @@ unsafe extern "system" fn handle_event(
         }
     }
 
-    if rdcexw_fn().is_some() {
+    if request.data.use_extended {
         // ── ExW パス: FILE_NOTIFY_EXTENDED_INFORMATION ──────────────────────
         // FileAttributes フィールドでファイル/ディレクトリを区別する。
         // Wine では 16bit (WCHAR) 境界にアラインされるため read_unaligned を使う。
